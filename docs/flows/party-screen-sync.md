@@ -1,7 +1,10 @@
 # Flow: Party Screen Sync (roster, dismiss, upgrade)
 
 **Status:** AUDITED
-**Validated against commit:** `9558722` (A4 residual — server-side
+**Validated against commit:** `ce0e287` (steamid persistence,
+runtime-verified 2026-08-23: char-dict naming is sid-keyed for
+Steam-identified players — persistence reference only, the roster sync
+protocol is unaffected. Prior stamp `9558722`: A4 residual — server-side
 upgrade-credit consumption — fixed in the B2B3 merge, runtime smoke
 2026-07-25; prior stamp `a68b8ae`)
 
@@ -60,7 +63,9 @@ sequenceDiagram
   revisions credited the C-layer `PKT_SNAPSHOT`/`PKT_DELTA` stream; that
   channel never functioned in the dedicated topology and was retired in
   B8, `a68b8ae`.)
-- **Persistence:** stacks with wounded counts in `coop_char_<name>.wsedict`.
+- **Persistence:** stacks with wounded counts in the per-player char dict
+  (`coop_char_sid_<acctid>` / `coop_char_<name>`, key-builder-owned naming
+  since `ce0e287`).
 
 ## Invariants
 
@@ -106,6 +111,6 @@ sequenceDiagram
 Workbench documents (not part of the public export — see the citation
 note in `README.md`):
 
-- `docs/RE_NATIVE_SCREENS.md`, `docs/Screen_Session.md` — native window
+- `docs/archive/RE_NATIVE_SCREENS.md`, `docs/archive/Screen_Session.md` — native window
   hooks behind `wse_window_opened`.
 - project-state notes — C/DLL layer architecture (IPC-only since B8).

@@ -33,7 +33,7 @@ data[0x21DCB9] = 0xEB  # jne → jmp
 The server rate-limits per-player packet sends with an adaptive period clamped between 33ms (30Hz) and 100ms (10Hz). Campaign party positions update at this rate. Lowering the minimum period makes movement feel snappier.
 
 **Status: Never applied on rev 1145** (stale pre-1145 entry — see
-`docs/TRAFFIC_OPTIMIZATION.md` F2). Superseded by the runtime
+`docs/archive/TRAFFIC_OPTIMIZATION.md` F2). Superseded by the runtime
 `[NetTuning] SendRateHz` knob in CoopWSEPlugin (`nettune.c`).
 
 The `0x883B58 = Applied` VA below was never real for this binary — that

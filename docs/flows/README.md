@@ -29,12 +29,12 @@ documents — see the citation note above).
 
 | Flow | Relevant findings / docs |
 |------|--------------------------|
-| Battle pipeline | `docs/BATTLE_RESULTS_PIPELINE_AUDIT.md`, `patches/WarbandDedicated/findings.md`, `docs/superpowers/specs/2026-03-22-warband-coop-campaign-sync-design.md` |
+| Battle pipeline | `docs/archive/BATTLE_RESULTS_PIPELINE_AUDIT.md`, `patches/WarbandDedicated/findings.md`, `docs/archive/2026-03-22-warband-coop-campaign-sync-design.md` |
 | Siege | `docs/plans/siege-coop-plan.md`, `battle-pipeline.md` shared tail |
-| XP sync | `docs/SYNC_REDESIGN.md`, `docs/sync-systems/`, `patches/Warband/findings.md` (kill-XP paths), `patches/WSE2Dedicated/kb.h` |
-| Inventory sync | `docs/RE_NATIVE_SCREENS.md`, `docs/SP_SCREEN_RECREATION.md` |
-| Party screen sync | `docs/RE_NATIVE_SCREENS.md`, `docs/Screen_Session.md` |
-| Steam P2P tunnel | `docs/STEAM_P2P_FACTS.md`, `docs/NETWORKING_AUDIT.md`, `docs/TRAFFIC_OPTIMIZATION.md`, `patches/Warband_WSE2/findings.md` ("SteamAPI_RunCallbacks pump audit", "Loopback join classification", "Phase 4 invites+password RE" Q5–Q11) |
+| XP sync | `docs/archive/SYNC_REDESIGN.md`, `docs/sync-systems/`, `patches/Warband/findings.md` (kill-XP paths), `patches/WSE2Dedicated/kb.h` |
+| Inventory sync | `docs/archive/RE_NATIVE_SCREENS.md`, `docs/archive/SP_SCREEN_RECREATION.md` |
+| Party screen sync | `docs/archive/RE_NATIVE_SCREENS.md`, `docs/archive/Screen_Session.md` |
+| Steam P2P tunnel | `docs/archive/STEAM_P2P_FACTS.md`, `docs/archive/NETWORKING_AUDIT.md`, `docs/archive/TRAFFIC_OPTIMIZATION.md`, `patches/Warband_WSE2/findings.md` ("SteamAPI_RunCallbacks pump audit", "Loopback join classification", "Phase 4 invites+password RE" Q5–Q11) |
 
 RE symbol knowledge lives in `patches/<project>/kb.h`; narratives in
 `patches/<project>/findings*.md`. Dossiers link into those files — they are

@@ -1936,6 +1936,9 @@ slot_player_coop_in_local_encounter = 65
 slot_player_coop_char_state = 66
 coop_char_state_creation = 1  # no dict found; awaiting char-creation completion
 coop_char_state_ready    = 2  # load-or-creation completed; saves allowed
+slot_player_coop_steam_acctid = 67  # 32-bit Steam account id self-reported
+                                    # via ch49 ev 8 / ch126 ev 54; 0 = no
+                                    # Steam (username-keyed persistence)
 
 # trp_temp_troop slots for client-side character data (server-pushed)
 slot_coop_char_xp    = 30
@@ -2088,6 +2091,7 @@ coop_event_return_no_capture_heroes               = 50
 coop_event_return_team_troop_num                  = 51
 coop_event_battle_retreat                         = 52
 coop_event_return_is_initiator                    = 53
+coop_event_identify                               = 54
 
 # Coop player slot -- which troop the player has selected for the battle
 # Slots 40-48 are used by invasion mode (ccoop); 49 is free

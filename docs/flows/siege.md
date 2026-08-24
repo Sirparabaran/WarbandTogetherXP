@@ -1,7 +1,10 @@
 # Flow: Siege (coop siege battle types + local siege)
 
 **Status:** AUDITED
-**Validated against commit:** `0b2500a`
+**Validated against commit:** `ce0e287` (steamid persistence,
+runtime-verified 2026-08-23: the `@char_siege_center` stash lives in the
+now sid-or-username-keyed char dict — persistence reference only. Prior
+stamp `0b2500a`)
 
 ## Scope
 
@@ -102,7 +105,8 @@ sequenceDiagram
 
 ## Invariants
 
-- The local-siege target lives in the **username-keyed char dict**
+- The local-siege target lives in the **per-player char dict**
+  (sid- or username-keyed since `ce0e287`; key-builder-owned naming)
   (`@char_siege_center`) because the client disconnects into its local
   mission and rejoins with a NEW player_no and slot-derived party — player
   and party ids identify nothing across that boundary (runtime-proven:
@@ -154,5 +158,5 @@ Workbench documents (not part of the public export — see the citation
 note in `README.md`):
 
 - `docs/plans/siege-coop-plan.md` — earlier siege planning notes.
-- `docs/superpowers/specs/2026-03-23-warband-coop-party-creation-design.md`
+- `docs/archive/2026-03-23-warband-coop-party-creation-design.md`
   — party-creation design notes.

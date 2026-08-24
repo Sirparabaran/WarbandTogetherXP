@@ -28,6 +28,16 @@ simple_triggers = [
     (assign, "$g_coop_server_ip_loaded", 1),
     (display_message, "@COOP: battle servers={s59}:7241-7247"),
 
+    # $g_coop_my_steam_acctid is DLL-written, module-read (Task 4). A module
+    # assignment is still required: read-only globals are emitted into
+    # variables.txt as "$name" lines the DLL's resolver cannot match (index
+    # -1, writes silently dropped). The DLL republishes it periodically.
+    # $g_coop_identify_sent / $g_coop_identify_ticks are module-only
+    # (client send latch + no-acctid retry counter).
+    (assign, "$g_coop_identify_sent", 0),
+    (assign, "$g_coop_identify_ticks", 0),
+    (assign, "$g_coop_my_steam_acctid", 0),
+
     # Clear stale battle dict from previous session
     (try_begin),
       (multiplayer_is_server),
@@ -4479,6 +4489,64 @@ simple_triggers = [
   # Screen close poller: party + character snapshot-diff
   (0.5,
    [
+      # --- Client identify (retry until acctid or tick budget) ---
+      # Self-report Steam account id so the server can key char persistence
+      # by acctid instead of username. One send per connection (client
+      # globals are wiped on every connect), but NOT a blind first-tick
+      # send: the ASI republishes $g_coop_my_steam_acctid every 500 ms, so
+      # each tick we wait for a nonzero acctid and only after ~10 empty
+      # ticks (~5 s: non-Steam client) give up and send 0/0 (username
+      # keying for the session). Campaign-gated (same idiom as the
+      # server-side blocks in this file): identify is a campaign-hydration
+      # event and must never fire at a battle server.
+      (try_begin),
+          (neg|multiplayer_is_server),
+          (multiplayer_is_campaign),
+          (eq, "$g_coop_identify_sent", 0),
+          (assign, ":acct_lo", "$g_coop_my_steam_acctid"),
+          (assign, ":do_send", 0),
+          (try_begin),
+              (gt, ":acct_lo", 0),
+              (assign, ":do_send", 1),
+          (else_try),
+              (val_add, "$g_coop_identify_ticks", 1),
+              (ge, "$g_coop_identify_ticks", 10),
+              (assign, ":do_send", 1),
+          (try_end),
+          (eq, ":do_send", 1),
+          (assign, ":acct_hi", ":acct_lo"),
+          (val_mod, ":acct_lo", 0x10000),
+          (val_div, ":acct_hi", 0x10000),
+          (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_identify, ":acct_lo", ":acct_hi"),
+          (assign, "$g_coop_identify_sent", 1),
+      (try_end),
+
+      # --- Server hydration timeout fallback ---
+      # A player who never sends identify (old/modified client) is hydrated
+      # with acctid 0 (username keying) so play proceeds. join_time here is
+      # a per-player TICK COUNTDOWN stamped at join (10 = ~5 s of 0.5 s
+      # passes), not a mission-timer stamp -- store_mission_timer_a is not
+      # a verified engine fact on the dedicated campaign personality. The
+      # 1->0 decrement fires the fallback hydrate and zeroes the slot
+      # (one-shot: the gt 0 gate never passes again).
+      (try_begin),
+          (multiplayer_is_server),
+          (multiplayer_is_campaign),
+          (get_max_players, ":num_players"),
+          (try_for_range, ":player_no", 1, ":num_players"),
+              (player_is_active, ":player_no"),
+              (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
+              (eq, ":char_state", 0),
+              (player_get_slot, ":countdown", ":player_no", slot_player_join_time),
+              (gt, ":countdown", 0),
+              (val_sub, ":countdown", 1),
+              (player_set_slot, ":player_no", slot_player_join_time, ":countdown"),
+              (eq, ":countdown", 0),
+              (call_script, "script_coop_player_hydrate", ":player_no", 0),
+          (try_end),
+      (try_end),
+
       # --- Party screen close ---
       # Simple triggers pause during native windows, so open==1 here
       # means the party screen just closed (same pattern as inventory).

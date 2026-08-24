@@ -73,6 +73,36 @@ int steam_invite_parse(const char *s, unsigned __int64 *host_id, int *pw) {
     return 0;
 }
 
+int steam_autojoin_verdict(int invite_pw, int has_local_password) {
+    return !invite_pw || has_local_password;
+}
+
+/* Window indices from mbGameScreen::createWindows @0x4C6430 (findings
+   "Auto-join on invite landing RE"). WAIT beats SELF: the campaign map (6)
+   consumes the flags itself, but only when it is the ACTIVE window -- with
+   a mission (0x0A) or conversation (0x0C) anywhere in the stack, or the
+   map buried under another screen, forced navigation would leak mission /
+   encounter state, so the armed flags just wait for the native arms. */
+int steam_autojoin_window_action(const int *stack, int count) {
+    int i, top;
+    if (!stack || count <= 0) return STEAM_AJ_WAIT;
+    for (i = 0; i < count; i++)
+        if (stack[i] == 0x06 || stack[i] == 0x0A || stack[i] == 0x0C)
+            return STEAM_AJ_WAIT_NATIVE;
+    top = stack[count - 1];
+    if (top == 0x00 || top == 0x01) return STEAM_AJ_WAIT;   /* modal dialog */
+    /* SELF is only the windows whose native arms end in gameType 4:
+       starting/loading route through loading mode 6 (m_switchingToCampaign
+       is set with the flags) and the browser hosts the connect arm. The
+       main menu (4) and profiles (0x19) arms hardcode loading mode 4 /
+       m_gameType = 1, under which the engine DROPS the campaign server's
+       ping reply (RE round 2, 0x543764) -- force them through our mode-6
+       recipe instead. */
+    if (top == 0x02 || top == 0x03 || top == 0x1A)
+        return STEAM_AJ_SELF;
+    return STEAM_AJ_NAVIGATE;
+}
+
 int steam_cfg_finalize(steam_cfg_t *c, const char *steamid_str,
                        const char *allowlist_str) {
     c->role = STEAM_ROLE_OFF;
@@ -319,15 +349,24 @@ static void __cdecl steam_on_debug_output(int nType, const char *pszMsg) {
 static CRITICAL_SECTION g_invite_cs;      /* init beside g_evq_cs in steam_tunnel_start */
 static char             g_invite_str[STEAM_INVITE_MAX];
 static volatile LONG    g_invite_pending;
+#define STEAM_INVITE_KIND_RP    0
+#define STEAM_INVITE_KIND_LOBBY 1
+static int              g_invite_kind;     /* guarded by g_invite_cs */
+static unsigned __int64 g_invite_lobby;    /* guarded by g_invite_cs */
 static volatile LONG    g_invite_pw;      /* set at accept time; steam_tunnel_invite_pw() */
-/* Set at accept time alongside g_invite_pw; consumed by Task 7 (not yet
-   wired to any reader here). */
+static volatile unsigned int g_local_acctid;  /* low dword of own SteamID64; 0 = Steam not up. steam_tunnel_local_acctid() */
+static unsigned __int64 g_local_steamid64;    /* full own SteamID64 (tunnel thread only); 0 = Steam not up */
+/* Set at accept time alongside g_invite_pw; consumed at tunnel-UP. */
 static volatile LONG    g_invite_landed_pending;
+/* Set at tunnel-UP when the landing qualifies for auto-join (verdict 1);
+   consumed by coop.c's FrameMove hook, which owns every engine write. */
+static volatile LONG    g_autojoin_armed;
 
 static void __fastcall steam_cb_rp_run(sf_cbase_t *self, void *edx, void *pvParam) {
     sf_GameRichPresenceJoinRequested_t *p = (sf_GameRichPresenceJoinRequested_t *)pvParam;
     (void)self; (void)edx;
     EnterCriticalSection(&g_invite_cs);
+    g_invite_kind = STEAM_INVITE_KIND_RP;
     lstrcpynA(g_invite_str, p->m_rgchConnect, sizeof(g_invite_str));
     LeaveCriticalSection(&g_invite_cs);
     InterlockedExchange(&g_invite_pending, 1);
@@ -354,6 +393,208 @@ static const sf_cbase_vtbl_t g_rp_vtbl = { steam_cb_rp_runio, steam_cb_rp_run, s
 static sf_cbase_t g_rp_cb = { &g_rp_vtbl, 0, 0 };
 static int g_rp_registered;
 
+static void __fastcall steam_cb_lj_run(sf_cbase_t *self, void *edx, void *pvParam) {
+    sf_GameLobbyJoinRequested_t *p = (sf_GameLobbyJoinRequested_t *)pvParam;
+    (void)self; (void)edx;
+    EnterCriticalSection(&g_invite_cs);
+    g_invite_kind = STEAM_INVITE_KIND_LOBBY;
+    g_invite_lobby = p->m_steamIDLobby;
+    LeaveCriticalSection(&g_invite_cs);
+    InterlockedExchange(&g_invite_pending, 1);
+    coop_log("[steam] lobby invite from %I64u: lobby=%I64u\n",
+             p->m_steamIDFriend, p->m_steamIDLobby);
+}
+
+static void __fastcall steam_cb_lj_runio(sf_cbase_t *self, void *edx, void *pvParam,
+                                         unsigned char bIOFailure, unsigned __int64 hCall) {
+    (void)bIOFailure; (void)hCall;
+    steam_cb_lj_run(self, edx, pvParam);
+}
+
+static int __fastcall steam_cb_lj_size(sf_cbase_t *self, void *edx) {
+    (void)self; (void)edx;
+    return (int)sizeof(sf_GameLobbyJoinRequested_t);
+}
+
+static const sf_cbase_vtbl_t g_lj_vtbl = { steam_cb_lj_runio, steam_cb_lj_run, steam_cb_lj_size };
+static sf_cbase_t g_lj_cb = { &g_lj_vtbl, 0, 0 };
+static int g_lj_registered;
+
+/* ------------------------------------------------------------------ */
+/*  Call-result wrapper (lobby API). Completion can be dispatched by   */
+/*  either pump (see the mailbox comments above), so RunIO only copies */
+/*  and flags; consumers poll on the tunnel thread.                    */
+/* ------------------------------------------------------------------ */
+
+static void __fastcall steam_cr_runio(sf_cbase_t *self, void *edx, void *pvParam,
+                                      unsigned char bIOFailure, unsigned __int64 hCall) {
+    steam_callresult_t *cr = (steam_callresult_t *)self;
+    (void)edx; (void)hCall;
+    if (!bIOFailure && pvParam)
+        memcpy(cr->result, pvParam, cr->cap);
+    cr->io_failure = bIOFailure;
+    InterlockedExchange(&cr->done, 1);
+}
+
+static void __fastcall steam_cr_run(sf_cbase_t *self, void *edx, void *pvParam) {
+    steam_cr_runio(self, edx, pvParam, 0, 0);
+}
+
+static int __fastcall steam_cr_size(sf_cbase_t *self, void *edx) {
+    (void)edx;
+    return ((steam_callresult_t *)self)->cap;
+}
+
+/* Physical vtable order = RunIO, Run, GetCallbackSizeBytes (MSVC reversed
+   overloads -- see steam_flat.h). */
+static const sf_cbase_vtbl_t g_cr_vtbl = { steam_cr_runio, steam_cr_run, steam_cr_size };
+
+void steam_callresult_init(steam_callresult_t *cr, void *result_buf, int cap,
+                           int iCallback) {
+    memset(cr, 0, sizeof(*cr));
+    cr->base.vtbl = &g_cr_vtbl;
+    cr->base.m_iCallback = iCallback;
+    cr->cap = cap;
+    cr->result = result_buf;
+}
+
+/* Tunnel thread only. A completed or never-armed wrapper cancels to a no-op. */
+static void steam_callresult_arm(steam_callresult_t *cr, unsigned __int64 hcall) {
+    cr->done = 0;
+    cr->io_failure = 0;
+    cr->hcall = hcall;
+    cr->armed = 1;
+    SF.RegisterCallResult(&cr->base, hcall);
+}
+
+static void steam_callresult_cancel(steam_callresult_t *cr) {
+    if (!cr->armed) return;
+    if (SF.UnregisterCallResult)
+        SF.UnregisterCallResult(&cr->base, cr->hcall);
+    cr->armed = 0;
+}
+
+/* Lobby state (phase 5). One membership per session, host or joiner --
+   g_lobby_id nonzero means "leave this on cleanup". The lobby is invite
+   sugar only: nothing in the tunnel data path may ever depend on it. */
+#define STEAM_LOBBY_MAX_MEMBERS 16
+/* Public, not Invisible: the 2026-08-23 runtime gate proved Invisible
+   lobbies are NOT returned to other users' RequestLobbyList despite the
+   web-researched claim ("lobby up: type=3" on the host, "no lobby owned
+   by the host in results" x3 on every joiner) -- the spec-sanctioned
+   fallback. Membership grants nothing; access stays password+allowlist
+   gated, and the host= data filter keeps strangers' searches from
+   matching anything they could use. */
+#define STEAM_LOBBY_TYPE SF_LOBBY_TYPE_PUBLIC
+
+static unsigned __int64    g_lobby_id;
+static steam_callresult_t  g_lobby_created_cr;
+static sf_LobbyCreated_t   g_lobby_created_res;
+
+/* Joiner lobby membership (spec 3): find the host's lobby by data filter,
+   verify by OWNER (a host crash migrates ownership of the stale lobby to a
+   member, so data alone can match a husk), join. Bounded: a joiner can hit
+   UP moments before the host's CreateLobby round trip lands, so 3 attempts
+   5 s apart, then give up for the session. Log-only throughout. */
+#define STEAM_LOBBY_JOIN_ATTEMPTS  3
+#define STEAM_LOBBY_RETRY_MS       5000
+
+#define LJ_IDLE      0
+#define LJ_SEARCHING 1
+#define LJ_JOINING   2
+#define LJ_SETTLED   3   /* member, or budget exhausted -- no more work */
+
+static int                 g_lj_state;
+static int                 g_lj_attempts;
+static DWORD               g_lj_next_tick;
+static unsigned __int64    g_lj_candidate;
+static steam_callresult_t  g_lj_list_cr;
+static sf_LobbyMatchList_t g_lj_list_res;
+static steam_callresult_t  g_lj_enter_cr;
+static sf_LobbyEnter_t     g_lj_enter_res;
+
+static void steam_lobby_join_begin(void) {
+    if (!SF.matchmaking) return;
+    if (g_lobby_id) { g_lj_state = LJ_SETTLED; return; }   /* already a member */
+    g_lj_state = LJ_IDLE;
+    g_lj_attempts = 0;
+    g_lj_next_tick = 0;
+}
+
+static void steam_lj_charge_failure(const char *why) {
+    coop_log("[steam] lobby join attempt %d/%d failed: %s\n",
+             g_lj_attempts, STEAM_LOBBY_JOIN_ATTEMPTS, why);
+    if (g_lj_attempts >= STEAM_LOBBY_JOIN_ATTEMPTS) {
+        coop_log("[steam] lobby join: giving up for this session -- Invite to Game unavailable (tunnel unaffected)\n");
+        g_lj_state = LJ_SETTLED;
+        return;
+    }
+    g_lj_state = LJ_IDLE;
+    g_lj_next_tick = GetTickCount() + STEAM_LOBBY_RETRY_MS;
+}
+
+static void steam_client_lobby_tick(void) {
+    if (!SF.matchmaking || g_lj_state == LJ_SETTLED) return;
+
+    if (g_lj_state == LJ_IDLE) {
+        unsigned __int64 hcall;
+        char idstr[24];
+        if (g_lj_next_tick && GetTickCount() < g_lj_next_tick) return;
+        g_lj_attempts++;
+        /* Filters are consumed per request -- re-add both every attempt.
+           Default distance filter is geo-restricted; the tunnel's whole
+           point is cross-region. */
+        _snprintf(idstr, sizeof(idstr), "%I64u", g_tun.cfg.host_steamid);
+        SF.AddRequestLobbyListDistanceFilter(SF.matchmaking, SF_LOBBY_DIST_WORLDWIDE);
+        SF.AddRequestLobbyListStringFilter(SF.matchmaking, "host", idstr, SF_LOBBY_CMP_EQUAL);
+        hcall = SF.RequestLobbyList(SF.matchmaking);
+        if (!hcall) { steam_lj_charge_failure("RequestLobbyList failed outright"); return; }
+        steam_callresult_init(&g_lj_list_cr, &g_lj_list_res,
+                              (int)sizeof(g_lj_list_res), SF_CB_LOBBY_MATCH_LIST);
+        steam_callresult_arm(&g_lj_list_cr, hcall);
+        g_lj_state = LJ_SEARCHING;
+        return;
+    }
+
+    if (g_lj_state == LJ_SEARCHING) {
+        int i;
+        unsigned __int64 found = 0, hcall;
+        if (!g_lj_list_cr.done) return;
+        g_lj_list_cr.armed = 0;
+        if (g_lj_list_cr.io_failure) { steam_lj_charge_failure("lobby list io failure"); return; }
+        for (i = 0; i < (int)g_lj_list_res.m_nLobbiesMatching; i++) {
+            unsigned __int64 lob = SF.GetLobbyByIndex(SF.matchmaking, i);
+            /* Owner -- not lobby data -- is the match criterion (stale-husk
+               defense, spec 3 step 4). */
+            if (lob && SF.GetLobbyOwner(SF.matchmaking, lob) == g_tun.cfg.host_steamid) {
+                found = lob;
+                break;
+            }
+        }
+        if (!found) { steam_lj_charge_failure("no lobby owned by the host in results"); return; }
+        g_lj_candidate = found;
+        hcall = SF.JoinLobby(SF.matchmaking, found);
+        if (!hcall) { steam_lj_charge_failure("JoinLobby failed outright"); return; }
+        steam_callresult_init(&g_lj_enter_cr, &g_lj_enter_res,
+                              (int)sizeof(g_lj_enter_res), SF_CB_LOBBY_ENTER);
+        steam_callresult_arm(&g_lj_enter_cr, hcall);
+        g_lj_state = LJ_JOINING;
+        return;
+    }
+
+    /* LJ_JOINING */
+    if (!g_lj_enter_cr.done) return;
+    g_lj_enter_cr.armed = 0;
+    if (g_lj_enter_cr.io_failure ||
+        g_lj_enter_res.m_EChatRoomEnterResponse != SF_CHAT_ENTER_SUCCESS) {
+        steam_lj_charge_failure("LobbyEnter rejected");
+        return;
+    }
+    g_lobby_id = g_lj_candidate;
+    g_lj_state = LJ_SETTLED;
+    coop_log("[steam] joined host lobby %I64u -- Invite to Game armed\n", g_lobby_id);
+}
+
 /* Q9 verdict (Task 1): connected-to-a-server state is BSS-plain and
    background-thread safe -- m_networkActive nonzero, m_actionCode == 7
    (join sent / session live), and m_gameType == 1 (multiplayer). All
@@ -373,50 +614,144 @@ static void steam_notify(const char *msg) {
     coop_log("[steam] %s\n", msg);
 }
 
-/* Parses and acts on a pending invite: refuses cross-role/in-session/
-   already-tunneled cases, otherwise promotes this session to CLIENT and
-   ends any live client loop so the thread epilogue rebuilds against the
-   new host. Called at the top of steam_drain_events so every role loop
-   (including OFF standby) drains it. */
-static void steam_drain_invite(void) {
-    char raw[STEAM_INVITE_MAX];
+/* Lobby-invite resolve in flight (only one at a time; a newer click
+   supersedes -- same last-writer-wins policy as the mailbox). */
+static unsigned __int64    g_ir_lobby;      /* 0 = no resolve pending */
+static steam_callresult_t  g_ir_enter_cr;
+static sf_LobbyEnter_t     g_ir_enter_res;
+
+/* The phase-4 parse/refusal/promotion body, shared by both invite kinds.
+   from_lobby != 0 means the string came out of a joined lobby: refusals
+   leave it again so we don't linger as a member of a lobby we refused --
+   EXCEPT the already-tunneled refusal (membership is legitimate there)
+   and except our own held membership (host clicking its own invite, or
+   the already-tunneled joiner: g_lobby_id == from_lobby). Accept keeps
+   membership: the promotion rebuild's cleanup leaves it and the fresh
+   client session re-joins via the search path (already-member joins
+   report success). */
+static void steam_invite_act(const char *raw, unsigned __int64 from_lobby) {
     unsigned __int64 id;
     int pw;
-
-    if (InterlockedExchange(&g_invite_pending, 0) == 0) return;
-    EnterCriticalSection(&g_invite_cs);
-    lstrcpynA(raw, g_invite_str, sizeof(raw));
-    LeaveCriticalSection(&g_invite_cs);
+    int refuse_keeps_membership = 0;
+    int refused = 1;
 
     if (!steam_invite_parse(raw, &id, &pw)) {
         coop_log("[steam] malformed invite '%s' -- ignored\n", raw);
-        return;
-    }
-    if (g_tun.cfg.role == STEAM_ROLE_HOST) {
-        coop_log("[steam] invite ignored -- this machine is the host\n");
-        return;
-    }
-    if (steam_engine_in_session()) {
+    } else if (g_tun.cfg.role == STEAM_ROLE_HOST) {
+        /* A chain invite from one of our own joiners targets THIS host --
+           the host player joins their own server over plain LAN (no
+           tunnel), so arm the local auto-join kind instead of refusing. */
+        if (g_local_steamid64 && id == g_local_steamid64) {
+            if (steam_engine_in_session()) {
+                steam_notify("Join Game: leave the current server first, then click again");
+            } else {
+                refused = 0;
+                InterlockedExchange(&g_autojoin_armed, STEAM_AUTOJOIN_LOCAL);
+                steam_notify("Join Game: this is our own server -- auto-joining over LAN");
+            }
+        } else {
+            coop_log("[steam] invite ignored -- this machine hosts a different server\n");
+        }
+    } else if (steam_engine_in_session()) {
         steam_notify("Join Game: leave the current server first, then click again");
-        return;
-    }
-    if (g_tun.cfg.role == STEAM_ROLE_CLIENT && g_tun.cfg.host_steamid == id &&
-        steam_tunnel_client_is_up()) {
+    } else if (g_tun.cfg.role == STEAM_ROLE_CLIENT && g_tun.cfg.host_steamid == id &&
+               steam_tunnel_client_is_up()) {
         steam_notify("Join Game: tunnel to this host is already up -- join via the MP browser");
+        refuse_keeps_membership = 1;
+    } else {
+        refused = 0;
+        coop_log("[steam] invite accepted: host=%I64u pw=%d -- rebuilding as client\n", id, pw);
+        g_tun.cfg.host_steamid = id;
+        g_tun.cfg.role = STEAM_ROLE_CLIENT;
+        InterlockedExchange(&g_invite_pw, pw);
+        InterlockedExchange(&g_invite_landed_pending, 1);
+        g_start_tick = GetTickCount();  /* re-anchor: watchdog measures from THIS PENDING, not process start */
+        InterlockedExchange(&g_tun.client_state, STEAM_CLI_PENDING);  /* hold browser inject */
+        g_tun.client_dead = 1;      /* ends a live client session; standby returns via role check */
+    }
+
+    if (refused && from_lobby && !refuse_keeps_membership &&
+        from_lobby != g_lobby_id && SF.matchmaking)
+        SF.LeaveLobby(SF.matchmaking, from_lobby);
+}
+
+/* Drains a pending invite from either kind's mailbox and hands it to
+   steam_invite_act. Called at the top of steam_drain_events so every role
+   loop (including OFF standby) drains it. A lobby-kind entry must first
+   join the lobby (async, via a call result) and read its "connect" data
+   before it has anything to act on. */
+static void steam_drain_invite(void) {
+    char raw[STEAM_INVITE_MAX];
+    int kind;
+    unsigned __int64 lobby;
+
+    /* Finish an in-flight lobby resolve first. */
+    if (g_ir_lobby && g_ir_enter_cr.done) {
+        g_ir_enter_cr.armed = 0;
+        if (g_ir_enter_cr.io_failure ||
+            g_ir_enter_res.m_EChatRoomEnterResponse != SF_CHAT_ENTER_SUCCESS) {
+            coop_log("[steam] lobby invite: could not enter lobby %I64u (io=%d resp=%u)\n",
+                     g_ir_lobby, g_ir_enter_cr.io_failure,
+                     g_ir_enter_res.m_EChatRoomEnterResponse);
+        } else {
+            const char *cs = SF.GetLobbyData(SF.matchmaking, g_ir_lobby, "connect");
+            if (!cs || !cs[0]) {
+                coop_log("[steam] lobby invite: lobby %I64u carries no connect data\n",
+                         g_ir_lobby);
+                if (g_ir_lobby != g_lobby_id)
+                    SF.LeaveLobby(SF.matchmaking, g_ir_lobby);
+            } else {
+                char buf[STEAM_INVITE_MAX];
+                lstrcpynA(buf, cs, sizeof(buf));
+                steam_invite_act(buf, g_ir_lobby);
+            }
+        }
+        g_ir_lobby = 0;
+    }
+
+    if (InterlockedExchange(&g_invite_pending, 0) == 0) return;
+    EnterCriticalSection(&g_invite_cs);
+    kind = g_invite_kind;
+    lobby = g_invite_lobby;
+    lstrcpynA(raw, g_invite_str, sizeof(raw));
+    LeaveCriticalSection(&g_invite_cs);
+
+    if (kind == STEAM_INVITE_KIND_LOBBY) {
+        unsigned __int64 hcall;
+        if (!SF.matchmaking) {
+            coop_log("[steam] lobby invite ignored -- lobby exports unavailable\n");
+            return;
+        }
+        /* A newer click supersedes a resolve still in flight -- cancel the
+           call result and leave the superseded lobby so it doesn't linger
+           as untracked membership. */
+        if (g_ir_lobby) {
+            steam_callresult_cancel(&g_ir_enter_cr);
+            if (g_ir_lobby != g_lobby_id)
+                SF.LeaveLobby(SF.matchmaking, g_ir_lobby);
+            g_ir_lobby = 0;
+        }
+        hcall = SF.JoinLobby(SF.matchmaking, lobby);
+        if (!hcall) {
+            coop_log("[steam] lobby invite: JoinLobby(%I64u) failed outright\n", lobby);
+            return;
+        }
+        steam_callresult_init(&g_ir_enter_cr, &g_ir_enter_res,
+                              (int)sizeof(g_ir_enter_res), SF_CB_LOBBY_ENTER);
+        steam_callresult_arm(&g_ir_enter_cr, hcall);
+        g_ir_lobby = lobby;
         return;
     }
 
-    coop_log("[steam] invite accepted: host=%I64u pw=%d -- rebuilding as client\n", id, pw);
-    g_tun.cfg.host_steamid = id;
-    g_tun.cfg.role = STEAM_ROLE_CLIENT;
-    InterlockedExchange(&g_invite_pw, pw);
-    InterlockedExchange(&g_invite_landed_pending, 1);
-    g_start_tick = GetTickCount();  /* re-anchor: watchdog measures from THIS PENDING, not process start */
-    InterlockedExchange(&g_tun.client_state, STEAM_CLI_PENDING);  /* hold browser inject */
-    g_tun.client_dead = 1;      /* ends a live client session; standby returns via role check */
+    steam_invite_act(raw, 0);
 }
 
 int steam_tunnel_invite_pw(void) { return g_invite_pw != 0; }
+
+int  steam_tunnel_autojoin_armed(void) { return g_autojoin_armed != 0; }
+void steam_tunnel_autojoin_clear(void) { InterlockedExchange(&g_autojoin_armed, 0); }
+
+unsigned int steam_tunnel_local_acctid(void) { return g_local_acctid; }
 
 /* Blocks until Steam is usable for this process. Fresh start: the engine's
    boot-time SteamAPI_Init verdict (ADDR_STEAM_API_INIT) is authoritative;
@@ -521,6 +856,27 @@ static void steam_steamside_cleanup(void) {
         if (g_rp_registered && SF.UnregisterCallback) {
             SF.UnregisterCallback(&g_rp_cb);
         }
+        if (g_lj_registered && SF.UnregisterCallback) {
+            SF.UnregisterCallback(&g_lj_cb);
+        }
+        if (SF.matchmaking) {
+            steam_callresult_cancel(&g_lobby_created_cr);
+            steam_callresult_cancel(&g_lj_list_cr);
+            steam_callresult_cancel(&g_lj_enter_cr);
+            steam_callresult_cancel(&g_ir_enter_cr);
+            if (g_lobby_id)
+                SF.LeaveLobby(SF.matchmaking, g_lobby_id);
+            /* Cancelling the call result doesn't stop the JoinLobby round
+               trip already in flight at Steam -- it completes and leaves us
+               a member regardless. Leave preemptively; LeaveLobby on a
+               lobby we're not yet in is a harmless no-op processed after
+               the pending join. */
+            if (g_ir_lobby && g_ir_lobby != g_lobby_id)
+                SF.LeaveLobby(SF.matchmaking, g_ir_lobby);
+            if (g_lj_state == LJ_JOINING && g_lj_candidate != g_lobby_id &&
+                g_lj_candidate != g_ir_lobby)
+                SF.LeaveLobby(SF.matchmaking, g_lj_candidate);
+        }
         if (SF.sockets) {
             for (i = 0; i < STEAM_NUM_VPORTS; i++) {
                 if (g_tun.cv[i].conn)
@@ -538,6 +894,17 @@ static void steam_steamside_cleanup(void) {
         coop_log("[steam] Steam-side cleanup faulted (Steam already gone?) -- state reset anyway\n");
     }
     g_rp_registered = 0;   /* re-registered on rebuild; Steam may be gone here, hence SEH above */
+    g_lj_registered = 0;
+    g_lobby_id = 0;
+    g_lobby_created_cr.armed = 0;
+    g_lj_state = LJ_IDLE;
+    g_lj_attempts = 0;
+    g_lj_next_tick = 0;
+    g_lj_candidate = 0;
+    g_lj_list_cr.armed = 0;
+    g_lj_enter_cr.armed = 0;
+    g_ir_lobby = 0;
+    g_ir_enter_cr.armed = 0;
     steam_relay_init(g_tun.relays, STEAM_MAX_RELAYS);
     for (i = 0; i < STEAM_NUM_VPORTS; i++) {
         g_tun.listen[i] = 0;
@@ -593,10 +960,24 @@ static void steam_role_session(void) {
     }
     SF.InitRelayNetworkAccess(SF.utils);
 
+    /* Own SteamID is known as soon as Steam is usable, regardless of role --
+       role-OFF standby is the feature's main audience (LAN-Steam players). */
+    if (SF.GetSteamID) {
+        unsigned __int64 self_id = SF.GetSteamID(SF.user);
+        g_local_steamid64 = self_id;
+        g_local_acctid = (unsigned int)(self_id & 0xFFFFFFFFu);
+    }
+
     if (!g_rp_registered && SF.RegisterCallback) {
         SF.RegisterCallback(&g_rp_cb, SF_CB_GAME_RICH_PRESENCE_JOIN_REQUESTED);
         g_rp_registered = 1;
         coop_log("[steam] Join Game callback registered\n");
+    }
+
+    if (!g_lj_registered && SF.RegisterCallback && SF.matchmaking) {
+        SF.RegisterCallback(&g_lj_cb, SF_CB_GAME_LOBBY_JOIN_REQUESTED);
+        g_lj_registered = 1;
+        coop_log("[steam] lobby invite callback registered\n");
     }
 
     g_role_start_tick = GetTickCount();
@@ -985,6 +1366,36 @@ static void steam_drain_events(void) {
 #define STEAM_DGRAM_MAX 2048   /* mbnet caps datagrams at 1350; headroom only */
 #define STEAM_RECV_BATCH 64
 
+/* Polled from the host loop: finishes CreateLobby and stamps the lobby
+   data. Log-only on failure -- the lobby is never transport. */
+static void steam_host_lobby_tick(void) {
+    if (!g_lobby_created_cr.armed || !g_lobby_created_cr.done) return;
+    g_lobby_created_cr.armed = 0;
+    if (g_lobby_created_cr.io_failure ||
+        g_lobby_created_res.m_eResult != SF_RESULT_OK) {
+        coop_log("[steam] CreateLobby failed (io=%d result=%d) -- Invite to Game unavailable\n",
+                 g_lobby_created_cr.io_failure, g_lobby_created_res.m_eResult);
+        return;
+    }
+    g_lobby_id = g_lobby_created_res.m_ulSteamIDLobby;
+    {
+        char cs[STEAM_INVITE_MAX], idstr[24];
+        unsigned __int64 self_id = SF.GetSteamID ? SF.GetSteamID(SF.user) : 0;
+        if (!self_id) {
+            coop_log("[steam] lobby up: %I64u but GetSteamID returned 0 -- host tag skipped\n",
+                     g_lobby_id);
+            return;
+        }
+        _snprintf(idstr, sizeof(idstr), "%I64u", self_id);
+        SF.SetLobbyData(SF.matchmaking, g_lobby_id, "host", idstr);
+        if (steam_invite_build(cs, sizeof(cs), self_id,
+                               g_tun.cfg.has_password ? STEAM_RP_PW_FLAG : 0) > 0)
+            SF.SetLobbyData(SF.matchmaking, g_lobby_id, "connect", cs);
+        coop_log("[steam] lobby up: %I64u (type=%d, Invite to Game armed)\n",
+                 g_lobby_id, STEAM_LOBBY_TYPE);
+    }
+}
+
 static void steam_host_run(void) {
     int v;
     char buf[STEAM_DGRAM_MAX];
@@ -1020,6 +1431,21 @@ static void steam_host_run(void) {
         }
     }
 
+    /* Host lobby: membership lights the friends-list right-click
+       "Invite to Game" entry; lobby data carries the same connect string
+       so an accept resolves through the one existing parse path. */
+    if (SF.matchmaking) {
+        unsigned __int64 hcall = SF.CreateLobby(SF.matchmaking, STEAM_LOBBY_TYPE,
+                                                STEAM_LOBBY_MAX_MEMBERS);
+        if (hcall) {
+            steam_callresult_init(&g_lobby_created_cr, &g_lobby_created_res,
+                                  (int)sizeof(g_lobby_created_res), SF_CB_LOBBY_CREATED);
+            steam_callresult_arm(&g_lobby_created_cr, hcall);
+        } else {
+            coop_log("[steam] CreateLobby failed outright -- Invite to Game unavailable\n");
+        }
+    }
+
     for (;;) {
         SteamNetworkingMessage_t *msgs[STEAM_RECV_BATCH];
         int n, i;
@@ -1029,6 +1455,7 @@ static void steam_host_run(void) {
         TUN_PHASE("host:pump");     steam_pump_callbacks();
         TUN_PHASE("host:runcb");    SF.RunCallbacks(SF.sockets);
         TUN_PHASE("host:drain");    steam_drain_events();
+        TUN_PHASE("host:lobby");    steam_host_lobby_tick();
         TUN_PHASE("host:stats");    steam_periodic_stats();
 
         /* Steam -> backend */
@@ -1111,10 +1538,27 @@ static void steam_client_run(void) {
     InterlockedExchange(&g_tun.client_up, 1);
     InterlockedExchange(&g_tun.client_state, STEAM_CLI_UP);
     if (InterlockedExchange(&g_invite_landed_pending, 0)) {
-        steam_notify("Join Game: tunnel ready -- COOP Direct is in the MP browser (LAN tab)");
-        /* RE Q5: auto-join deferred to a future design; armed-browser-row
-           is the committed landing (Task 7 Step 1). See findings Q5. */
+        if (steam_autojoin_verdict(g_invite_pw, g_tun.cfg.has_password)) {
+            InterlockedExchange(&g_autojoin_armed, STEAM_AUTOJOIN_TUNNEL);
+            steam_notify("Join Game: tunnel ready -- auto-joining COOP Direct");
+        } else {
+            steam_notify("Join Game: passworded server -- type the password in the MP browser (LAN tab)");
+        }
     }
+    /* Chain invites: a joiner advertises the same connect string the host
+       does, so THIS player's friends get "Join Game" too. The pw flag is
+       the same single-writer fact the injected browser row uses: an
+       accepted invite's :pw OR a locally configured [Coop] Password. */
+    if (SF.SetRichPresence) {
+        char cs[STEAM_INVITE_MAX];
+        if (steam_invite_build(cs, sizeof(cs), g_tun.cfg.host_steamid,
+                               (steam_tunnel_invite_pw() || g_tun.cfg.has_password)
+                                   ? STEAM_RP_PW_FLAG : 0) > 0) {
+            SF.SetRichPresence(SF.friends, "connect", cs);
+            coop_log("[steam] rich presence set (chain invite): %s\n", cs);
+        }
+    }
+    steam_lobby_join_begin();
     coop_log("[steam] client proxy up: 127.0.0.1 ports 7240/7241/7243/7245/7247 -> %I64u\n",
              g_tun.cfg.host_steamid);
     steam_log_relay_status("proxy-up");
@@ -1132,6 +1576,7 @@ static void steam_client_run(void) {
         TUN_PHASE("cli:pump");      steam_pump_callbacks();
         TUN_PHASE("cli:runcb");     SF.RunCallbacks(SF.sockets);
         TUN_PHASE("cli:drain");     steam_drain_events();
+        TUN_PHASE("cli:lobby");     steam_client_lobby_tick();
         TUN_PHASE("cli:stats");     steam_periodic_stats();
 
         /* Steam -> engine */

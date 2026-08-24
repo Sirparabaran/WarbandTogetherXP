@@ -1,7 +1,11 @@
 # Flow: XP Sync (char XP, stack upgrades, battle XP)
 
 **Status:** AUDITED
-**Validated against commit:** `9681486` (net-optimizations: packed char
+**Validated against commit:** `ce0e287` (steamid persistence,
+runtime-verified 2026-08-23: the rejoin-time full char push now fires
+from `coop_player_hydrate` (ch49 identify ev 8 / 5 s fallback), not the
+join handler, and char dicts are sid-keyed for Steam-identified players;
+the packed protocol itself is unchanged. Prior stamp `9681486`: packed char
 sync ch125 ev 36-40 replaces the per-value events this dossier used to
 cite — XP now travels in `packed_misc` (ev 40) rather than the old
 `char_sync_xp` (ev 21); runtime-verified via 2-client smoke, see
@@ -72,7 +76,7 @@ sequenceDiagram
 | 3d | Selective push-back on screen close: category bitfield gates which packed messages re-send | `module_coop_scripts.py` | 10299–10339 | `request_char_sync` (ch49 ev 7) arm — `coop_char_dirty_*` bits (attrs/gold/points→core, skills→skills, profs→profs, xp/health/renown→misc); hero-xp + done always sent, even with a clean (0) dirty mask |
 | 4 | Client receive: snapshot mirror per field | `module_coop_scripts.py` | 7104–7245 | `slot_coop_char_snap_*` on `trp_temp_troop`, written in each packed arm of `coop_char_client_receive` |
 | 5 | Sync-done gate for diff poller | `module_coop_scripts.py` | 7240–7244 | `$g_coop_char_snap_ready` |
-| 6 | Push triggers on rejoin | `module_coop_scripts.py` | 8221–8224 | `coop_send_char_sync_to_client`, `coop_send_party_upgradeable_to_client` |
+| 6 | Push triggers at hydration (identify / 5 s fallback after rejoin) | `module_coop_scripts.py` | 9053 | `coop_send_char_sync_to_client`, `coop_send_party_upgradeable_to_client` (inside `coop_player_hydrate`, def `:8891`) |
 | 7 | Stack upgradeable push (ev 22 sender) | `module_coop_scripts.py` | 9678–9693 | `coop_send_party_upgradeable_to_client` (`party_stack_get_num_upgradeable`) |
 | 8 | Stack upgradeable client apply | `module_coop_scripts.py` | 8488–8498 | `party_stack_set_num_upgradeable` |
 | 9 | Battle XP pool (dedicated) | `module_coop_scripts.py` | 9488–9516 | `coop_compute_sp_xp_pool_from_dict` |
@@ -174,6 +178,6 @@ sequenceDiagram
 Workbench documents (not part of the public export — see the citation
 note in `README.md`):
 
-- `docs/SYNC_REDESIGN.md`, `docs/sync-systems/` — original char-sync design.
+- `docs/archive/SYNC_REDESIGN.md`, `docs/sync-systems/` — original char-sync design.
 - `docs/superpowers/plans/2026-04-10-sp-xp-battle-parity.md` — the SP-parity
   work this flow implements.

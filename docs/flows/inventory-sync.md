@@ -1,7 +1,11 @@
 # Flow: Inventory Sync (equip pushes, bag sync, screen close-diff)
 
 **Status:** AUDITED
-**Validated against commit:** `9681486` (net-optimizations: the join-time
+**Validated against commit:** `ce0e287` (steamid persistence,
+runtime-verified 2026-08-23: char-dict naming is sid-keyed for
+Steam-identified players and the join-time pre-warm push now fires from
+`coop_player_hydrate` (ch49 identify / 5 s fallback), not the join handler;
+this flow's own events are unaffected. Prior stamp `9681486`: the join-time
 char sync this dossier's sequence diagram references is now 5 packed
 messages, ch125 ev 36-40, not the old per-value events 16-24 — see
 `xp-sync.md` for the char-sync detail; this flow's own events (15/25/26,
@@ -16,7 +20,8 @@ How a player's equipment (slots 0–9) and bag (slots 10–105) stay in sync
 between the campaign server's authoritative troop struct and the client's
 native inventory screen, and how gear reaches the battle server. Entry
 points: campaign join (pre-warm push), native inventory window open/close,
-battle spawn. Exit state: server troop + `coop_char_<name>.wsedict` reflect
+battle spawn. Exit state: server troop + the per-player char dict
+(`coop_char_sid_<acctid>` / `coop_char_<name>`, see key-builders) reflect
 client edits. The trade screen has its own synced flow (ch49 ev 20–22 /
 ch125 ev 29–32) and is out of scope here.
 
@@ -80,8 +85,11 @@ sequenceDiagram
 - **Snapshot slots** on `trp_temp_troop`: equip items 160–169, equip mods
   170–179, bag items 180–275, bag mods 276–371
   (`module_constants.py:1944–1947`).
-- **Dict:** equipment + bag with imods persisted per player in
-  `coop_char_<name>.wsedict` by `coop_save_character`.
+- **Dict:** equipment + bag with imods persisted per player in the char
+  dict (`coop_char_sid_<acctid>.wsedict` for Steam-identified players,
+  `coop_char_<name>.wsedict` otherwise — naming owned by the
+  `coop_char_store_dict_name[_raw]` key-builders since `ce0e287`) by
+  `coop_save_character`.
 
 ## Invariants
 
@@ -129,7 +137,7 @@ sequenceDiagram
 ## Open questions
 
 None — all audit rows resolved module-side (native screen internals were
-already covered by `docs/RE_NATIVE_SCREENS.md`; no new engine RE required).
+already covered by `docs/archive/RE_NATIVE_SCREENS.md`; no new engine RE required).
 
 ## Related docs
 
@@ -143,7 +151,7 @@ already covered by `docs/RE_NATIVE_SCREENS.md`; no new engine RE required).
 Workbench documents (not part of the public export — see the citation
 note in `README.md`):
 
-- `docs/RE_NATIVE_SCREENS.md`, `docs/SP_SCREEN_RECREATION.md` — native
+- `docs/archive/RE_NATIVE_SCREENS.md`, `docs/archive/SP_SCREEN_RECREATION.md` — native
   window hook RE (source of the `wse_window_opened` mechanism).
 - `docs/superpowers/plans/2026-04-14-native-inventory-screen.md` — the
   native-inventory-screen implementation plan.

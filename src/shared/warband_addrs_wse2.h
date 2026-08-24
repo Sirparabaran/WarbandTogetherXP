@@ -77,8 +77,16 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 #define CAMP_ADDR_CUR_MISSION 0x8CC4B0  /* mbMission** (PDB: g_mission) */
 #define DED_ADDR_CUR_GAME     0x901514  /* mbGame** (PDB: g_game), battle dedicated */
 #define DED_ADDR_CUR_MISSION  0x901518  /* mbMission** (PDB: g_mission) */
-/* ADDR_GAME_CLOCK: no standalone global; clock is within mbGame struct.
-   TODO: verify live -- find offset from *g_game via mbGame::updateHour (0x4B2710). */
+
+/* Campaign-exe hook/patch sites -- these are PREFERRED-BASE VAs and must be
+   passed through REBASE(): the dedicated exes load ASLR-slid. PDB-derived,
+   patches/WarbandDedicated findings "B2 fix addresses". The old client-exe
+   ADDR_CAMPAIGN_TICK / ADDR_AI_PATH_WALK_LIMIT below are a DIFFERENT binary
+   and must never be used to hook/patch the campaign exe. */
+#define CAMP_ADDR_CAMPAIGN_TICK           0x466EB0  /* mbGame::frameMove -- __thiscall(game*, float delta) */
+#define CAMP_CAMPAIGN_TICK_PROLOGUE_SIZE  6         /* push ebp; mov ebp,esp; sub esp,0x24 */
+#define CAMP_CAMPAIGN_TICK_PROLOGUE_BYTES { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24 }
+#define CAMP_ADDR_AI_PATH_WALK_LIMIT      0x4ABE57  /* operand byte of cmp eax,6 @0x4ABE55 in mbParty::aiUpdateBehavior 0x4ABAB0 */
 
 /* =================================================================== */
 /*  Function addresses                                                  */
@@ -94,6 +102,20 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 
 /* Screen / UI */
 #define ADDR_PUSH_SCREEN     0x4C7CE0  /* mbGameScreen::openWindow -- __thiscall(g_gameScreen, int window_id) */
+#define ADDR_SET_WINDOW      0x4C7C50  /* mbGameScreen::setWindow(int) -- pops the open-window stack (close()
+                                          each), then openWindow. __thiscall in the PDB but never reads ECX
+                                          (indexes g_gameScreen.m_windows directly) -- callable as stdcall(int).
+                                          PDB-verified (findings "Auto-join on invite landing RE"). */
+#define ADDR_LOADING_WINDOW_PTR  0xABB95C  /* g_gameScreen.m_windows[3] -- mbLoadingWindow* */
+#define ADDR_OPEN_WINDOWS_BEGIN  0xABB9E8  /* g_gameScreen.m_openWindows rglVector<int> begin */
+#define ADDR_OPEN_WINDOWS_END    0xABB9EC  /* g_gameScreen.m_openWindows rglVector<int> end; active window
+                                              index = *(int*)(end - 4) */
+#define LOADING_WINDOW_MODE_OFF   0x04   /* mbLoadingWindow m_mode: 6 = MP route without the
+                                            m_switchingModule requirement (mbStartingWindow recipe) */
+#define LOADING_WINDOW_SOURCE_OFF 0x14   /* m_sourceWindowNo (back target; 4 = mbInitialWindow) */
+#define LOADING_WINDOW_STEP_OFF   0x6C   /* mbLoadingWindow::m_step -- reset to 0 before setWindow(3).
+                                            (m_stage is 0x68; 0x148 is m_savegameNo -- the pre-audit
+                                            value zeroed the savegame slot, PDB audit B8) */
 
 /* String operations */
 #define ADDR_RGL_STRING_COPY 0x679DC0  /* rglString::operator=(char const*) -- __thiscall(rglString*, char*) */
@@ -120,9 +142,6 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 /* Save system */
 #define ADDR_BUILD_SAVE_PATH     0x45DB30  /* mbBasicGame::getMyDocumentsSavegamePath */
 
-/* Path recalculation */
-#define ADDR_RECALC_PATH_ROSTER  0x7688F0  /* unnamed -- prologue byte-matched from vanilla */
-
 /* =================================================================== */
 /*  Prologue sizes (verified by WSE2 disassembly -- complete instrs,    */
 /*  no relative refs)                                                   */
@@ -134,8 +153,6 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 #define INITIATE_BATTLE_PROLOGUE_SIZE 9  /* push ebp; mov ebp,esp; sub esp,0x248 */
 #define ENCOUNTER_ACTION_PROLOGUE_SIZE 7 /* push ebp; mov ebp,esp; test byte [ebp+8],1; push ebx */
 #define CLEANUP_BATTLE_PROLOGUE_SIZE  9  /* push ebp; mov ebp,esp; mov eax,fs:[0] (SEH, safe) */
-#define RECALC_PATH_ROSTER_PROLOGUE_SIZE 6  /* sub esp,0xC; push ebx; push ebp; push esi */
-#define MAX_ROSTER_RECURSION_DEPTH   16
 
 /* =================================================================== */
 /*  Inline patch site addresses                                         */
@@ -162,28 +179,9 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 /* Serial bypass in connect thread */
 #define ADDR_SERIAL_BYPASS          0x547D61  /* 6-byte jne -- NOP to bypass serial check */
 
-/* MP screen widget null-bypass patch sites (6 sites in mbMultiplayerScreen) */
-#define ADDR_MP_WIDGET_PATCH_1      0x6121BB  /* jmp over null widget deref (14 bytes) */
-#define ADDR_MP_WIDGET_PATCH_2      0x612212  /* jmp over null widget deref (5 bytes) */
-#define ADDR_MP_WIDGET_PATCH_3      0x612232  /* short jmp over null widget deref (2 bytes) */
-#define ADDR_MP_WIDGET_PATCH_4      0x61238B  /* jmp over null widget deref (14 bytes) */
-#define ADDR_MP_WIDGET_PATCH_5      0x6123E2  /* jmp over null widget deref (5 bytes) */
-#define ADDR_MP_WIDGET_PATCH_6      0x61240A  /* short jmp over null widget deref (2 bytes) */
-
-/* Slot-array destructor guard */
-#define ADDR_SLOT_DESTRUCTOR_GUARD  0x47541E  /* js/jnp patch to skip -1 pointer free (2 bytes) */
-
-/* Duplicate player name check */
-#define ADDR_DUP_NAME_CHECK         0x48FB70  /* 6-byte NOP to skip duplicate name comparison */
-
-/* Browse thread cleanup */
-#define ADDR_BROWSE_THREAD_CLEANUP  0x487D35  /* 5-byte NOP to skip browse thread join/close */
-
-/* Serial validation error checks */
-#define ADDR_SERIAL_ERR_CHECK_1     0x484E1F  /* 6-byte NOP -- first error path */
-#define ADDR_SERIAL_ERR_CHECK_2     0x484E51  /* 6-byte NOP -- second error path */
-#define ADDR_SERIAL_SPLIT_CHECK     0x484E72  /* 13-byte patch: mov edi,fake_resp + jmp (bypass) */
-#define ADDR_SERIAL_SPLIT_RESUME    0x484F7C  /* target of jmp from split-check bypass */
+/* Vanilla-era patch-site cluster removed: every address was mid-instruction
+   in unrelated WSE2 code (rglConfig::save, muParser, CD3DEnumeration...) --
+   PDB audit B6. */
 
 /* =================================================================== */
 /*  Network manager globals                                             */
@@ -243,9 +241,8 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 
 #define ADDR_SCREEN_MGR_BASE     0xABB950  /* g_gameScreen -- mbGameScreen instance (0xA4 bytes) */
 /* In WSE2, g_gameScreen is a struct instance, NOT a pointer-to-pointer like vanilla.
-   ADDR_MAP_SCREEN_PTR has no direct equivalent; the load-mode data is within
-   g_gameScreen.m_windows[slot].  TODO: verify live if loading screen data needed. */
-#define ADDR_MAP_SCREEN_PTR      0xABB950  /* placeholder: g_gameScreen base (different semantics!) */
+   No standalone "map screen pointer" exists; g_gameScreen is just
+   m_windows[38] + m_openWindows (audit (c)). */
 
 /* g_basicGame (0xA84C68) contains game type and direct connect fields */
 #define ADDR_BASIC_GAME          0xA84C68  /* mbBasicGame instance (0x35608 bytes) */
@@ -260,9 +257,10 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 #define ADDR_SWITCHING_TO_CAMPAIGN   0xA8960E  /* g_basicGame.m_switchingToCampaign (bool) */
 #define ADDR_DIRECT_CONNECT_FLAG     0xA8960F  /* g_basicGame.m_connectToServer (bool) */
 
-/* Encounter flags -- within g_metaMission */
+/* Encounter flags: real encounter flags = game+0x3C8 (mbGame::m_encounterFlags),
+   not an mbMetaMission field. ADDR_ENCOUNTER_FLAGS was a duplicate of
+   ADDR_META_MISSION + OFF_MM_RESULT_FLAGS under a wrong name (B5), removed. */
 #define ADDR_META_MISSION        0xA476D8  /* mbMetaMission instance (0x50 bytes) */
-#define ADDR_ENCOUNTER_FLAGS     0xA476F4  /* encounter_flags bitfield (uint) -- TODO: verify live */
 
 /* =================================================================== */
 /*  Additional WSE2 globals                                             */
@@ -288,7 +286,11 @@ extern const addr_table *g_addrs;          /* pinned once at init */
    RE'd from addExperienceToTroop at 0x46B270 in dedicated_campaign.
    m_experience at +0x164, m_level at +0x178 (same as client). */
 #define CAMP_OFF_TROOP_ARRAY     0x13D28    /* game + offset -> troop_array_ptr */
-#define CAMP_TROOP_STRIDE        0x978      /* sizeof(mbTroop) -- vanilla size, not WSE2 0xFC8 */
+#define CAMP_TROOP_STRIDE        0x978      /* sizeof(mbTroop) = 0x978 in this build (PDB-confirmed; no 0xFC8 variant exists -- audit b1) */
+#define CAMP_ADDR_LEVEL_TABLE         0x8C3040  /* g_levelTable -- int[64] (PDB ?g_levelTable@@3PAHA) */
+#define CAMP_LEVEL_TABLE_ENTRIES      64
+#define CAMP_ADDR_LEVEL_BOUNDARY_MULT 0x8C1AD4  /* rglConfig::Campaign::fLevelBoundaryMultiplier (float) */
+#define CAMP_OFF_NUM_TROOPS           0x13D2C   /* mbGame::m_numTroops (right after m_troops @0x13D28) */
 #define ADDR_META_MISSION_BASE   0xA476D8  /* g_metaMission -- mbMetaMission (0x50 bytes) */
 #define ADDR_TIME_SPEED_MULT     0xA44D0C  /* float: time_speed_multiplier (read-only constant) */
 #define ADDR_NUM_PLAYERS_LIMIT   0xA44D68  /* int: rglConfig::Network::iNumPlayersLimit */
@@ -308,7 +310,8 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 /*  Game struct offsets (from *ADDR_CUR_GAME)                           */
 /* =================================================================== */
 
-#define OFF_TIME_DELTA           0x15C40  /* float: m_timeDelta -- vanilla 0x16250  TODO: verify live */
+#define OFF_TIME_DELTA           0x15A64  /* float: m_frameTime (PDB) -- 0x15C40 was inside m_mainPartyDnas, audit B4 */
+#define OFF_GAME_HOUR            0x13EA0  /* m_hour; +4 day, +8 week, +C month, +10 year; m_dateTimer (mbGameTimer) at +0x13E90 -- PDB */
 #define OFF_SAVE_SLOT            0x0000   /* int: m_savegameNo (same as vanilla) */
 #define OFF_MAIN_PARTY_NO        0x0394   /* int: m_mainPartyNo -- vanilla 0x6CC */
 #define OFF_CAMERA_PARTY_NO      0x03A0   /* int: m_cameraPartyNo -- vanilla 0x6D8 */
@@ -362,15 +365,18 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 /* =================================================================== */
 
 /*
- * ARCHITECTURAL CHANGE: WSE2 items vector is a flat mbParty** array.
- * Vanilla used a chunked deque (HV_CHUNK_SHIFT=4, 16 items/chunk).
- * HV_CHUNK_SHIFT and HV_CHUNK_MASK are NOT used in WSE2 -- kept as zero sentinels.
+ * Chunked storage, same as vanilla: m_items is an array of chunk pointers,
+ * each chunk holding 16 mbParty (PDB audit B3). `mbGame::getParty` decompiles
+ * to (raw & 0xF)*0x5718 + items[raw >> 4]; `rglHashVector<mbParty>::createChunk`
+ * @0x4BF210 allocates chunks. For main-thread client code prefer the engine's
+ * O(1) `mbGame::getParty` @0x4B5E40 -- the raw walker below exists only for
+ * thread-safe reads off the main thread.
  */
-#define HV_ITEMS_BEGIN       0x138CC   /* m_items._Myfirst (mbParty** array) */
+#define HV_ITEMS_BEGIN       0x138CC   /* m_items._Myfirst (mbParty** chunk array) */
 #define HV_ITEMS_END         0x138D0   /* m_items._Mylast */
-#define HV_NUM_CREATED       0x138D8   /* m_numIndices */
-#define HV_CHUNK_SHIFT       0         /* UNUSED -- WSE2 uses flat array, not chunks */
-#define HV_CHUNK_MASK        0         /* UNUSED -- WSE2 uses flat array, not chunks */
+#define HV_NUM_CREATED       0x138D8   /* m_numIndices (party count, not raw slot count) */
+#define HV_CHUNK_SHIFT       4         /* 16 mbParty per chunk */
+#define HV_CHUNK_MASK        0xF
 
 /* =================================================================== */
 /*  Party struct offsets (party size = 0x5718)                          */
@@ -385,7 +391,6 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 #define PARTY_OFF_TROOPS_VEC 0x0138   /* rglVector<mbPartyStack> (12 bytes) -- vanilla 0x240 */
 #define PARTY_OFF_NUM_STACKS 0x0144   /* int: m_numStacks -- vanilla 0x250 */
 #define PARTY_OFF_ATTACHED_TO 0x0164  /* int: m_parentPartyNo -- vanilla 0x20C */
-#define PARTY_OFF_PRISONER_OF 0x016C  /* int: unnamed padding -- vanilla 0x274  TODO: verify live */
 
 /* AI pending fields -- written by aiUpdateBehavior, copied to active each tick */
 #define PARTY_OFF_AI_PENDING       0x0184  /* int: m_defaultBehavior -- vanilla 0x294 */
@@ -399,11 +404,12 @@ extern const addr_table *g_addrs;          /* pinned once at init */
 #define PARTY_OFF_AI_TARGET_X      0x01C8  /* float: m_behaviorPosition.x -- vanilla 0x2DC */
 #define PARTY_OFF_AI_TARGET_Y      0x01CC  /* float: m_behaviorPosition.y -- vanilla 0x2E0 */
 
-#define PARTY_OFF_AI_WAIT_TIMER    0x0180  /* float: m_defaultBehaviorWaitTime -- vanilla 0x290  TODO: verify live */
+#define PARTY_OFF_AI_WAIT_TIMER    0x0180  /* float: m_behaviorSelectTime -- vanilla 0x290 */
 #define PARTY_OFF_DEST             0x0210  /* rglVector2: x at +0x210, y at +0x214 -- vanilla 0x320 */
-#define PARTY_OFF_PATH_STATUS      0x5228  /* int: m_pathStatus -- vanilla 0x533C  TODO: verify live */
-#define PARTY_OFF_PATH_TARGET      0x522C  /* int: m_pathTargetParty -- vanilla 0x5340  TODO: verify live */
+#define PARTY_OFF_PATH_STATUS      0x5228  /* int: m_pathValidity -- vanilla 0x533C */
+#define PARTY_OFF_PATH_TARGET      0x522C  /* int: m_targetManifoldFaceNo (navmesh face, NOT a party no) -- vanilla 0x5340 */
 #define PARTY_OFF_PATH_NEEDS_UPDATE 0x5230 /* int: m_computePath -- vanilla 0x5344 */
+#define PARTY_OFF_MOVE_TARGET_PARTY 0x5250 /* m_moveTargetPartyNo -- the party-valued target (PDB, audit B9) */
 #define PARTY_OFF_SLOTS            0x5280  /* mbSlots -> rglVector<__int64> -- vanilla 0x5390 */
 
 /* Party stack struct (WSE2 size = 0x1C vs vanilla 0x20) */
@@ -474,12 +480,8 @@ static __inline void *wb_cur_mission(void) {
     return *(void **)REBASE(g_addrs->cur_mission);
 }
 
-/* Game clock accessor -- needs mbGame field offset, not yet found.
-   TODO: verify live via mbGame::updateHour (0x4B2710). */
-/* static __inline __int64 *wb_game_clock(void) { ... } */
-
 /* =================================================================== */
-/*  Hash vector navigation -- FLAT POINTER ARRAY (not chunked)          */
+/*  Hash vector navigation -- CHUNKED (16 mbParty per chunk, PDB B3)    */
 /* =================================================================== */
 
 static __inline int hv_num_items(const void *game) {
@@ -488,23 +490,37 @@ static __inline int hv_num_items(const void *game) {
 }
 
 /*
- * WSE2 hash vector items: flat array of mbParty* pointers.
- * items[index] is a direct pointer to the party, or NULL.
+ * Chunk-indexed party lookup: m_items is an array of chunk pointers, each
+ * chunk holding HV_CHUNK_MASK+1 mbParty slots contiguously. raw_index is a
+ * raw slot index (chunk_no = raw_index >> HV_CHUNK_SHIFT, slot within chunk
+ * = raw_index & HV_CHUNK_MASK), not a party-count index.
  */
 static __inline char *hv_party_ptr(const void *game, int raw_index) {
     const char *hv = (const char *)game + OFF_PARTIES_HV;
-    char **items_begin = *(char ***)(hv + HV_ITEMS_BEGIN);
-    char **items_end   = *(char ***)(hv + HV_ITEMS_END);
-    int num_items;
-    if (!items_begin || !items_end) return NULL;
-    num_items = (int)(items_end - items_begin);
-    if (raw_index < 0 || raw_index >= num_items) return NULL;
-    return items_begin[raw_index];
+    char **chunks     = *(char ***)(hv + HV_ITEMS_BEGIN);
+    char **chunks_end = *(char ***)(hv + HV_ITEMS_END);
+    int num_chunks, chunk_no;
+    if (!chunks || !chunks_end) return NULL;
+    num_chunks = (int)(chunks_end - chunks);
+    if (raw_index < 0) return NULL;
+    chunk_no = raw_index >> HV_CHUNK_SHIFT;
+    if (chunk_no >= num_chunks || !chunks[chunk_no]) return NULL;
+    return chunks[chunk_no] + (raw_index & HV_CHUNK_MASK) * PARTY_SIZE;
 }
 
+/*
+ * Scans every raw slot across all chunks (num_chunks << HV_CHUNK_SHIFT),
+ * not hv_num_items() -- that count is the live party count, not the raw
+ * slot capacity. For main-thread client code prefer the engine's O(1)
+ * mbGame::getParty @0x4B5E40; this walker exists for thread-safe reads only.
+ */
 static __inline char *find_party_by_no(const void *game, int target_no) {
-    int total = hv_num_items(game);
-    int i;
+    const char *hv = (const char *)game + OFF_PARTIES_HV;
+    char **chunks     = *(char ***)(hv + HV_ITEMS_BEGIN);
+    char **chunks_end = *(char ***)(hv + HV_ITEMS_END);
+    int total, i;
+    if (!chunks || !chunks_end) return NULL;
+    total = (int)(chunks_end - chunks) << HV_CHUNK_SHIFT;
     for (i = 0; i < total; i++) {
         char *p = hv_party_ptr(game, i);
         if (!p) continue;
@@ -614,10 +630,11 @@ static __inline int mm_encounter_side(void) {
 #define ADDR_VEC_CLEAR          0x51E570  /* rglVector<mbnetServer>::clear */
 #define ADDR_FILL_SERVER_LIST   0x51CE10  /* fillServerList(this=window) */
 
-/* Troop struct */
-#define ADDR_TROOPS_VEC  0xA4B978
-#define TROOP_SIZE       0x2EC
-#define TROOP_SLOTS_OFF  0x148
+/* Troop access (client): mbGame::m_troops at game+0x13D40 (mbTroop*, stride
+   0x978), m_numTroops at +0x13D44; troop slots = mbTroop::m_slots (mbSlots)
+   at +0x968, elements __int64. Engine accessor: mbGame::getTroop 0x4B5DA0.
+   (PDB audit B7 -- the previous ADDR_TROOPS_VEC/TROOP_SIZE/TROOP_SLOTS_OFF
+   trio was vanilla-era and entirely wrong.) */
 
 /* Option C — metaMission populate for coop local battle.
    See patches/Warband/findings_encounters.md "Option C Impl RE". */
@@ -653,8 +670,9 @@ static __inline int mm_encounter_side(void) {
 #define ADDR_PARTY_TALK_JOIN         0x52EA9B  /* Talk-branch join point (MP skip) */
 
 /* In MP the skipped Talk instead opens the clicked member's character
-   sheet, mirroring the engine's canonical companion-open sequence at
-   0x534DF9 (party window): charWin->m_viewedTroopNo/+0x10 = troop,
+   sheet, mirroring the engine's canonical companion-open sequence.
+   0x534DF9 is inside mbPresentationWindow::frameMove, not the party
+   window: charWin->m_viewedTroopNo/+0x10 = troop,
    m_sourceWindowNo/+0x14 = return-to window, m_mode/+0x4 = 1, then
    mbGameScreen::setWindow(0xB). setWindow is stdcall(windowId), ret 4,
    no this. Sheet is read-only for troops with zero unspent point pools
@@ -693,11 +711,15 @@ static __inline int mm_encounter_side(void) {
    NOT patched -- cap stays 100000. These are PREFERRED-BASE VAs: both
    dedicated exes ARE ASLR-slid at runtime (confirmed live -- observed
    non-zero g_aslr_slide on both host and battle processes), so every
-   consumer must wrap these in REBASE(), never use them as raw literals. */
+   consumer must wrap these in REBASE(), never use them as raw literals.
+   AIMD sites live inside mbnetNetworkManager::frameMove; PKT_MAX sites
+   live inside mbnetPlayer::computePacketValues (esi+0x2FC there is
+   m_uploadLimit, dedicated d7). SEND_PERIOD is k_minPacketSendPeriod --
+   a single xref, no COMDAT collateral (dedicated d7). */
 #define CAMP_NT_AIMD_STEP    0x00489EED  /* add ecx,imm32 operand -- stock 1000 */
 #define CAMP_NT_AIMD_FLOOR   0x00489ECD  /* mov eax,imm32 operand -- stock 3000 */
 #define CAMP_NT_PKT_MAX      0x004A717A  /* mov eax,imm32 operand -- stock 1350 */
-#define CAMP_NT_SEND_PERIOD  0x00887BC0  /* .rdata float dword -- stock 0.033333335f */
+#define CAMP_NT_SEND_PERIOD  0x00887BC0  /* .rdata float dword -- stock 0.033333335f, k_minPacketSendPeriod */
 #define DED_NT_AIMD_STEP     0x004B468D  /* add ecx,imm32 operand -- stock 1000 */
 #define DED_NT_AIMD_FLOOR    0x004B466D  /* mov eax,imm32 operand -- stock 3000 */
 #define DED_NT_PKT_MAX       0x004D2A9A  /* mov eax,imm32 operand -- stock 1350 */
@@ -708,6 +730,7 @@ static __inline int mm_encounter_side(void) {
 #define DED_ADDR_GLOBAL_VARS_VEC   0x907AF0  /* g_basicGame+0x2B0 */
 #define DED_ADDR_GLOBAL_VARS_END   0x907AF4  /* m_globalVariables._Mylast */
 #define DED_ADDR_NETMGR_DATA       0x903F88
+#define CAMP_ADDR_NETMGR_DATA      0x8CEF20  /* g_multiplayerData (mbnetData) in dedicated_campaign -- PDB (audit d5); previously missing, DED_ twin is a different binary */
 #define DED_ADDR_NUM_PLAYERS_LIMIT 0x8F6E48
 #define DED_ADDR_AGENT_DIE         0x44B090  /* mbAgent::die, 5-byte hookable prologue */
 #define DED_ADDR_TRIGGER_EXECUTE   0x51AB30  /* mbTriggerManager::execute */
@@ -718,7 +741,6 @@ static __inline int mm_encounter_side(void) {
 #define DED_AGENT_SIZE             0x7250
 #define DED_AGENT_CHUNK_BITS       4
 #define DED_AGENT_CHUNK_MASK       0xF
-#define DED_AGENT_OFF_VALID        0x04
 #define DED_AGENT_OFF_STATUS       0x2C   /* 1=alive, 3=wounded */
 #define DED_AGENT_OFF_PLAYER_NO    0x30   /* -1 = no player */
 #define DED_AGENT_OFF_TROOP_NO     0x268
@@ -726,7 +748,8 @@ static __inline int mm_encounter_side(void) {
 
 /* Mission agent deque offsets */
 #define DED_MISSION_OFF_AGENT_CHUNKS  0x18
-#define DED_MISSION_OFF_AGENT_CAP     0x08
+#define DED_MISSION_OFF_AGENT_CAP     0x08  /* m_agents.m_capacity (allocated) */
+#define DED_MISSION_OFF_AGENT_COUNT   0x04  /* m_agents.m_size -- LIVE count; iterate this, not capacity (audit b4) */
 
 /* Dedicated server accessor helpers — only call from COOP_BATTLE code.
    Module global access lives in shared/modglobals (initialized per mode). */

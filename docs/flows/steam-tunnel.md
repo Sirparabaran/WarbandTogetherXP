@@ -2,9 +2,11 @@
 
 **Status:** AUDITED (new subsystem — no native counterpart, so the audit
 table records engine-interaction ground truth instead of ours-vs-native)
-**Validated against commit:** `1ccc315` (phase-4 invites+password; runtime
-gates passed 2026-07-28: LAN regression incl. role-OFF standby soak,
-zero-config invite promotion, password apply. Previous stamp `c462970`,
+**Validated against commit:** `5ccf502` (phase-5 chain/lobby invites +
+auto-join; all runtime gates 1-12 passed 2026-08-23/24 incl. LAN
+regression, chain invite, host + joiner right-click invites, ini-joiner
+lobby join, host-shutdown cleanup, password gates, and the auto-join
+matrix. Previous stamps: `1ccc315` phase-4 gates 2026-07-28, `c462970`
 steam-networking merge gates 2026-07-27)
 
 ## Scope
@@ -57,14 +59,33 @@ JOINER game (engine mbnet)          HOST game client (bridge)      HOST dedicate
   the engine's one-shot boot init never ran, the thread calls
   `SteamAPI_Init` itself after a 30 s grace (export ordinal 931).
 
-## Invites + server password (phase 4, `1ccc315`)
+## Invites + server password (phase 4 `1ccc315`, phase 5 `5ccf502`)
 
-**Invites are rich-presence only** (no Steam lobby): while the host
-bridge is up, the HOST's game client publishes rich presence
-`connect = coop:<host_id64>[:pw]` (`steam_host_run`, cleared in
-`steam_steamside_cleanup`). That lights the **friend-side "Join Game"
-button** — the host gets no right-click "Invite to Game" (lobby
-feature, deliberately not built).
+**Two invite surfaces, both funneling into the same mailbox path:**
+
+- **Rich presence** (phase 4 + phase-5 chain invites): the HOST's game
+  client publishes `connect = coop:<host_id64>[:pw]` while the bridge is
+  up, and since phase 5 **every joiner publishes the same string while
+  its client session is UP** — so friends of joiners also get the
+  friend-side "Join Game" button (chain invites, gate 2/3 verified).
+- **Steam lobby** (phase 5): the host creates a **Public** lobby at
+  bridge-up (`steam_host_lobby_tick`, `STEAM_LOBBY_TYPE` =
+  `SF_LOBBY_TYPE_PUBLIC` — the spec's Invisible default was flipped by
+  the pre-planned contingency `22c7248`: runtime proved Invisible
+  lobbies are NOT returned to other users' `RequestLobbyList`), stamped
+  with lobby data `host=<id64>` + the same connect string. Every joiner
+  finds it via `RequestLobbyList` + worldwide distance filter + string
+  filter on `host` and joins; lobby membership lights the right-click
+  **"Invite to Game"** entry for host AND joiners (gates 3/4). Lobby is
+  invite sugar, never transport: one join attempt per session, log-only
+  failures. Host shutdown destroys it (gate 6). Known Steam limitation
+  (accepted): lobby co-members lose their MUTUAL Join Game / Invite
+  entries toward each other — the entries exist toward third parties.
+- **Lobby-invite delivery** = `GameLobbyJoinRequested_t` (callback index
+  **333**, 16 B payload) into the phase-4 mailbox/parse/refusal/
+  promotion path. A host accepting a chain invite to its OWN server
+  takes the **LOCAL auto-join kind** (`d96fbeb`, joins over LAN, no
+  role change).
 
 - **Delivery:** a `GameRichPresenceJoinRequested_t` callback object
   (`CCallbackBase` emulation in `steam_flat.h`; index **337**, payload
@@ -84,13 +105,30 @@ feature, deliberately not built).
   tunnel-thread-mutable; PENDING is re-published (watchdog tick
   re-anchored — a mid-session invite must not trip the 90 s watchdog),
   a live CLIENT session ends via `client_dead`, and the thread epilogue
-  rebuilds as CLIENT with the new host id. Landing is **notify-only**
-  ("COOP Direct is in the MP browser"); auto-join was RE'd (needs
-  `m_switchingModule` 0xA8960D + both stored strings + table row 0) and
-  deferred as upside.
+  rebuilds as CLIENT with the new host id.
+- **Auto-join on landing (phase 5, gates 7-12):** at tunnel-UP an
+  armed-bit handshake fires unless the invite carried `:pw` and the
+  joiner has no local `[Coop] Password=` (`steam_autojoin_verdict` —
+  that case stays notify-only, gate 10). A `mbGame::frameMove` hook
+  (`ADDR_FRAMEMOVE` 0x483340, in `coop.c`) owns all engine writes:
+  opcode-3415-style stores (`m_storedAddress`/`m_storedPassword` via
+  `rglString::operator=`, `m_switchingModule` + `m_connectToServer`=1),
+  forced navigation from dead-zone screens via mbStartingWindow's
+  loading-window **mode-6** recipe (the route must yield `m_gameType=4`
+  or the engine drops campaign ping replies, `5e2f9f6`; mode 4 is
+  poison), WAIT while the stack holds map/tactical/conversation or a
+  modal dialog, a WAIT_NATIVE kind that sets `m_connectToServer`
+  just-in-time so the native main-menu arm can't win the same-frame
+  race via its mode-4 route (`af1a722`), and ASI-owned flag cleanup
+  (engine-consumed / 60 s timeout / tunnel down — mandatory because the
+  7-NOP 3415 patch removed the initial menu's native clear; verified no
+  stale-flag bounce, gate 11). With no `[Steam]` keys the hook idles
+  (gate 12).
 - The whole invite surface is one all-or-nothing optional export group
-  (Friends v017 + SteamUser v023 + Register/Unregister); any missing
-  export disables invites with one log line and never costs the tunnel.
+  (Friends v017 + SteamUser v023 + Register/Unregister; phase 5 folds in
+  the matchmaking accessor `SteamAPI_SteamMatchmaking_v009` + lobby
+  thunks); any missing export disables invites with one log line and
+  never costs the tunnel.
 
 **Password** is engine-native end to end; the value never crosses our
 wire (ch125/49/126/127) or the Steam connect string (`:pw` is a flag):
@@ -189,6 +227,6 @@ the direct-connect arm.
 
 ## Related docs
 
-- `docs/NETWORKING_AUDIT.md` §6-7 (architecture + roadmap),
-  `docs/STEAM_P2P_FACTS.md`, spec
+- `docs/archive/NETWORKING_AUDIT.md` §6-7 (architecture + roadmap),
+  `docs/archive/STEAM_P2P_FACTS.md`, spec
   `docs/superpowers/specs/2026-07-26-steam-networking-design.md`.

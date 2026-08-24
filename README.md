@@ -20,12 +20,12 @@ Co-op campaign mod for Mount & Blade: Warband using WSE2's multiplayer campaign 
 - **Battle server pool** — up to 4 dedicated battle servers (ports 7241/7243/7245/7247, one per slot), allocated per encounter; the pool auto-adapts to however many slots are running
 - **Battle chooser** — the battle initiator auto-connects; everyone else presses B on the campaign map to open a chooser listing every open battle (enemy + troop count) and can join any of them. Players fight one life with their campaign character and equipment, then rejoin the campaign
 - Battle results applied to the campaign per slot: casualties, wounds, and XP shares
-- **Persistent characters** — per-player `.wsedict` files on the campaign server; stats, equipment, gold, XP, and health survive reconnects
+- **Persistent characters** — per-player `.wsedict` files on the campaign server, keyed by Steam account id; stats, equipment, gold, XP, and health survive reconnects
 - **Native screens in coop** — character, inventory, and trade screens work against server-authoritative state (snapshot-diff sync on screen close)
 - **Local fights** — singleplayer-style battles (including sieges) run locally on the client when no battle server round-trip is needed, with results reported back
 - **Direct Connect** — the client ASI injects the campaign server into the MP browser from `coop.ini`; no LAN required
-- **Steam P2P tunnel** — internet play with **no port forwarding**. The host sets `SteamHost=1`; joiners either click the host's Steam **"Join Game"** button or set `HostSteamID64=`. All coop ports are tunneled over Steam Datagram Relay and surface as a loopback "COOP Direct" row in the MP browser's LAN tab
-- **Server password** — one `[Coop] Password=` protects the whole pool (campaign + every battle server); joiners type it into the MP browser's password box and mirror it in their own `coop.ini` so battle-server hops authenticate automatically
+- **Steam P2P tunnel + invites** — internet play with **no port forwarding**. The host sets `SteamHost=1`; friends click **"Join Game"** on the host *or on anyone already playing* (invites chain), and the host or any joiner can right-click a friend → **"Invite to Game"**. Accepting an invite **auto-joins**: the game navigates itself into the MP browser and connects, zero clicks. Manual setup via `HostSteamID64=` still works. All coop ports are tunneled over Steam Datagram Relay and surface as a loopback "COOP Direct" row in the MP browser's LAN tab
+- **Server password** — one `[Coop] Password=` protects the whole pool (campaign + every battle server); joiners mirror it in their own `coop.ini` so invite auto-join and battle-server hops authenticate automatically (a joiner without it can still type it into the MP browser's password box)
 - **Net tuning** — `[NetTuning]` knobs patched into the dedicated exes at startup: raised AIMD congestion floor/step (~10 s recovery instead of ~97 s) and `PacketMaxSize=1200` to fit Steam's real per-packet budget
 - Terrain-appropriate battle scenes (plain/steppe/snow/desert/forest variants)
 - 5-minute autosave on the campaign server

@@ -185,6 +185,47 @@ typedef struct {
 typedef char sf_assert_cbase[(sizeof(sf_cbase_t) == 12) ? 1 : -1];
 typedef char sf_assert_join_req[(sizeof(sf_GameRichPresenceJoinRequested_t) == 264) ? 1 : -1];
 
+/* Lobby API constants (ISteamMatchmaking, SDK header values). */
+#define SF_LOBBY_TYPE_PUBLIC     2
+#define SF_LOBBY_TYPE_INVISIBLE  3   /* returned by search; not friend-visible */
+#define SF_LOBBY_CMP_EQUAL       0   /* k_ELobbyComparisonEqual */
+#define SF_LOBBY_DIST_WORLDWIDE  3   /* default filter is geo-restricted */
+#define SF_CHAT_ENTER_SUCCESS    1   /* k_EChatRoomEnterResponseSuccess */
+
+/* k_iSteamMatchmakingCallbacks = 500; k_iSteamFriendsCallbacks = 300 */
+#define SF_CB_LOBBY_CREATED               513  /* +13 */
+#define SF_CB_LOBBY_ENTER                 504  /* +4 */
+#define SF_CB_LOBBY_MATCH_LIST            510  /* +10 */
+#define SF_CB_GAME_LOBBY_JOIN_REQUESTED   333  /* +33, web-verified 2026-08-23 */
+
+/* Callback payloads. MSVC's default 8-byte member alignment matches the
+   SDK's Windows callback pack (VALVE_CALLBACK_PACK_LARGE) -- no pragma. */
+typedef struct {
+    int              m_eResult;        /* SF_RESULT_OK on success */
+    unsigned __int64 m_ulSteamIDLobby; /* offset 8 (4 pad bytes before) */
+} sf_LobbyCreated_t;
+
+typedef struct {
+    unsigned __int64 m_ulSteamIDLobby;
+    unsigned int     m_rgfChatPermissions;
+    unsigned char    m_bLocked;
+    unsigned int     m_EChatRoomEnterResponse;  /* SF_CHAT_ENTER_SUCCESS = in */
+} sf_LobbyEnter_t;
+
+typedef struct {
+    unsigned int m_nLobbiesMatching;
+} sf_LobbyMatchList_t;
+
+typedef struct {
+    unsigned __int64 m_steamIDLobby;
+    unsigned __int64 m_steamIDFriend;
+} sf_GameLobbyJoinRequested_t;
+
+typedef char sf_assert_lobby_created[(sizeof(sf_LobbyCreated_t) == 16) ? 1 : -1];
+typedef char sf_assert_lobby_enter[(sizeof(sf_LobbyEnter_t) == 24) ? 1 : -1];
+typedef char sf_assert_lobby_matchlist[(sizeof(sf_LobbyMatchList_t) == 4) ? 1 : -1];
+typedef char sf_assert_lobby_join_req[(sizeof(sf_GameLobbyJoinRequested_t) == 16) ? 1 : -1];
+
 /* Flat-function pointer table. All flat calls are __cdecl with the
    interface pointer as the first argument. bool returns are 1 byte. */
 typedef struct {
@@ -228,6 +269,25 @@ typedef struct {
     void (__cdecl *RegisterCallback)(void *pCallback, int iCallback);
     void (__cdecl *UnregisterCallback)(void *pCallback);
     unsigned __int64 (__cdecl *GetSteamID)(void *);
+
+    /* optional -- lobby invites only (phase 5); absence disables the
+       right-click Invite to Game path, never the tunnel and never the
+       rich-presence chain invites. All-or-nothing, and only attempted
+       when the friends group above resolved (callback registration and
+       the invite parse path live there). CSteamID travels as uint64. */
+    void *matchmaking;   /* ISteamMatchmaking009* */
+    unsigned __int64 (__cdecl *CreateLobby)(void *, int eLobbyType, int cMaxMembers);            /* SteamAPICall_t */
+    unsigned __int64 (__cdecl *JoinLobby)(void *, unsigned __int64 lobby);                       /* SteamAPICall_t */
+    void (__cdecl *LeaveLobby)(void *, unsigned __int64 lobby);
+    unsigned char (__cdecl *SetLobbyData)(void *, unsigned __int64 lobby, const char *k, const char *v);
+    const char *(__cdecl *GetLobbyData)(void *, unsigned __int64 lobby, const char *k);
+    unsigned __int64 (__cdecl *RequestLobbyList)(void *);                                        /* SteamAPICall_t */
+    void (__cdecl *AddRequestLobbyListStringFilter)(void *, const char *k, const char *v, int eCmp);
+    void (__cdecl *AddRequestLobbyListDistanceFilter)(void *, int eDist);
+    unsigned __int64 (__cdecl *GetLobbyByIndex)(void *, int iLobby);
+    unsigned __int64 (__cdecl *GetLobbyOwner)(void *, unsigned __int64 lobby);
+    void (__cdecl *RegisterCallResult)(void *pCallback, unsigned __int64 hAPICall);
+    void (__cdecl *UnregisterCallResult)(void *pCallback, unsigned __int64 hAPICall);
 } steam_flat_t;
 
 extern steam_flat_t SF;

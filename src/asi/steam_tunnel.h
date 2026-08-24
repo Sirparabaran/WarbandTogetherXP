@@ -8,6 +8,8 @@
 #ifndef STEAM_TUNNEL_H
 #define STEAM_TUNNEL_H
 
+#include "steam_flat.h"
+
 #define STEAM_NUM_VPORTS   5     /* vport 0 = campaign, 1..4 = battle slots */
 #define STEAM_MAX_ALLOWED  16
 #define STEAM_MAX_RELAYS   40    /* host: one per (remote client x vport) */
@@ -51,6 +53,41 @@ int steam_invite_build(char *out, int out_size, unsigned __int64 host_id, int pw
 /* 1 = ok (*host_id nonzero, *pw 0/1); 0 = malformed (outputs untouched). */
 int steam_invite_parse(const char *s, unsigned __int64 *host_id, int *pw);
 
+/* Auto-join on invite landing (pure core; the engine-side fire lives in
+   coop.c's FrameMove hook). verdict: 1 = arm auto-join at tunnel-UP,
+   0 = keep the notify-only landing (passworded host, no local password
+   to supply). window_action classifies the engine's open-window stack
+   (bottom..top, `count` entries): SELF = a mode-6-safe window is active
+   and proceeds on m_switchingModule alone; WAIT = a modal dialog (or
+   boot) blocks everything, do nothing; WAIT_NATIVE = a live mission /
+   the campaign map is in the stack -- set m_connectToServer and let the
+   map/tactical native arms consume it; NAVIGATE = dead zone, force the
+   loading-window mode-6 route. */
+#define STEAM_AJ_NAVIGATE    0
+#define STEAM_AJ_SELF        1
+#define STEAM_AJ_WAIT        2
+#define STEAM_AJ_WAIT_NATIVE 3
+int steam_autojoin_verdict(int invite_pw, int has_local_password);
+int steam_autojoin_window_action(const int *stack, int count);
+
+/* Poll-style Steamworks call-result wrapper. init is pure (harness-tested);
+   arming/cancelling live in steam_tunnel.c and run on the tunnel thread
+   only. Steam completes it through the vtable's 3-arg RunIO slot; the
+   caller polls .done from the same thread that pumps callbacks, then reads
+   .io_failure and the result buffer. */
+typedef struct {
+    sf_cbase_t base;            /* MUST stay first: Steam sees a CCallbackBase* */
+    volatile long done;
+    unsigned char io_failure;
+    int cap;                    /* result buffer size == expected payload size */
+    void *result;               /* caller-owned */
+    int armed;                  /* RegisterCallResult outstanding */
+    unsigned __int64 hcall;     /* handle it was armed against */
+} steam_callresult_t;
+
+void steam_callresult_init(steam_callresult_t *cr, void *result_buf, int cap,
+                           int iCallback);
+
 /* Host-side relay bookkeeping: one entry per accepted Steam connection
    (= one remote client on one vport), holding its loopback UDP socket.
    conn == 0 marks a free slot. */
@@ -87,5 +124,21 @@ int steam_tunnel_client_state(void);
 /* 1 if the most recently accepted Join Game invite carried ":pw" -- Task 10
    variant B reads this to auto-fill the password on the promoted client. */
 int steam_tunnel_invite_pw(void);
+
+/* Auto-join arm handshake: the tunnel thread sets armed for a qualifying
+   invite landing; coop.c's FrameMove hook -- the sole engine-memory
+   writer -- consumes it and clears on completion, refusal, or timeout.
+   armed() returns the kind: TUNNEL = promoted joiner, fire only while the
+   client proxy is UP (address is the loopback re-aim); LOCAL = the host
+   machine joining its own server over LAN (no tunnel involvement). */
+#define STEAM_AUTOJOIN_TUNNEL 1
+#define STEAM_AUTOJOIN_LOCAL  2
+int  steam_tunnel_autojoin_armed(void);
+void steam_tunnel_autojoin_clear(void);
+
+/* Low dword of the local SteamID64, published by the tunnel thread as soon
+   as Steam is usable -- for every role, including OFF standby. 0 if Steam
+   is unavailable or not yet up. */
+unsigned int steam_tunnel_local_acctid(void);
 
 #endif /* STEAM_TUNNEL_H */

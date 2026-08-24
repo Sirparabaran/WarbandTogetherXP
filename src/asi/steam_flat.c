@@ -85,6 +85,40 @@ int steam_flat_resolve(void) {
             SF.GetSteamID = NULL;
             coop_log("[steam] Friends/SteamUser/RegisterCallback exports incomplete -- invites disabled (non-fatal)\n");
         }
+
+        /* Lobby group (phase 5): needs the friends group (RegisterCallback,
+           invite parse path), so only attempt it when that resolved. */
+        if (SF.friends) {
+            sf_accessor_fn acc_mm =
+                (sf_accessor_fn)GetProcAddress(m, "SteamAPI_SteamMatchmaking_v009");
+            SF.CreateLobby            = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_CreateLobby");
+            SF.JoinLobby              = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_JoinLobby");
+            SF.LeaveLobby             = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_LeaveLobby");
+            SF.SetLobbyData           = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_SetLobbyData");
+            SF.GetLobbyData           = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_GetLobbyData");
+            SF.RequestLobbyList       = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_RequestLobbyList");
+            SF.AddRequestLobbyListStringFilter   = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_AddRequestLobbyListStringFilter");
+            SF.AddRequestLobbyListDistanceFilter = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_AddRequestLobbyListDistanceFilter");
+            SF.GetLobbyByIndex        = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_GetLobbyByIndex");
+            SF.GetLobbyOwner          = (void *)GetProcAddress(m, "SteamAPI_ISteamMatchmaking_GetLobbyOwner");
+            SF.RegisterCallResult     = (void *)GetProcAddress(m, "SteamAPI_RegisterCallResult");
+            SF.UnregisterCallResult   = (void *)GetProcAddress(m, "SteamAPI_UnregisterCallResult");
+            if (acc_mm && SF.CreateLobby && SF.JoinLobby && SF.LeaveLobby &&
+                SF.SetLobbyData && SF.GetLobbyData && SF.RequestLobbyList &&
+                SF.AddRequestLobbyListStringFilter && SF.AddRequestLobbyListDistanceFilter &&
+                SF.GetLobbyByIndex && SF.GetLobbyOwner &&
+                SF.RegisterCallResult && SF.UnregisterCallResult)
+                SF.matchmaking = acc_mm();
+            if (!SF.matchmaking) {
+                SF.CreateLobby = NULL; SF.JoinLobby = NULL; SF.LeaveLobby = NULL;
+                SF.SetLobbyData = NULL; SF.GetLobbyData = NULL; SF.RequestLobbyList = NULL;
+                SF.AddRequestLobbyListStringFilter = NULL;
+                SF.AddRequestLobbyListDistanceFilter = NULL;
+                SF.GetLobbyByIndex = NULL; SF.GetLobbyOwner = NULL;
+                SF.RegisterCallResult = NULL; SF.UnregisterCallResult = NULL;
+                coop_log("[steam] Matchmaking exports incomplete -- lobby invites disabled (non-fatal)\n");
+            }
+        }
     }
 
     if (!ok) { memset(&SF, 0, sizeof(SF)); return 0; }

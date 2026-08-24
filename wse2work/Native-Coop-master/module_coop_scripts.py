@@ -1801,6 +1801,27 @@ coop_scripts = [
             (assign, "$g_round_ended", 1),
           (try_end),
         (else_try),
+          (eq, ":event_subtype", coop_event_identify),
+          # Battle-side identify: client self-reports its Steam acctid
+          # (lo16/hi16) so character load keys by acctid. Hydration and the
+          # spawn-gate clear happen in coop_battle_player_hydrate. Gated on
+          # the active mission's game type being one of the two coop battle
+          # types (same idiom as coop_event_start_map/open_admin_panel above)
+          # so a mischanneled/forged ch126 ev-54 can't run battle hydration
+          # on the campaign server, which runs no battle mission template and
+          # never sets $g_multiplayer_game_type to either coop battle value.
+          (this_or_next|eq, "$g_multiplayer_game_type", multiplayer_game_type_coop_battle),
+          (eq, "$g_multiplayer_game_type", multiplayer_game_type_coop_siege),
+          (store_script_param, ":acct_lo", 4),
+          (store_script_param, ":acct_hi", 5),
+          (val_max, ":acct_lo", 0),
+          (val_min, ":acct_lo", 0xFFFF),
+          (val_max, ":acct_hi", 0),
+          (val_min, ":acct_hi", 0xFFFF),
+          (store_mul, ":acctid", ":acct_hi", 0x10000),
+          (val_add, ":acctid", ":acct_lo"),
+          (call_script, "script_coop_battle_player_hydrate", ":player_no", ":acctid"),
+        (else_try),
           (eq, ":event_subtype", coop_event_open_admin_panel),
           (try_begin),
             (player_is_admin, ":player_no"),
@@ -4860,6 +4881,9 @@ coop_scripts = [
           (str_store_player_username, s1, ":player_no"),
           (dict_set_str, "$coop_dict", "@battle_player_{reg20}_name", s1),
 
+          (player_get_slot, ":pt_acctid", ":player_no", slot_player_coop_steam_acctid),
+          (dict_set_int, "$coop_dict", "@battle_player_{reg20}_acctid", ":pt_acctid"),
+
           (player_get_agent_id, ":agent_no", ":player_no"),
           (try_begin),
               (ge, ":agent_no", 0),
@@ -7499,6 +7523,51 @@ coop_scripts = [
   # CAMPAIGN: CHARACTER PERSISTENCE (save/load/creation)
   # ==================================================================
 
+  # coop_char_store_dict_name
+  # Single owner of char-dict naming (spec 2026-07-29 s3). param 1:
+  # player_no. Writes s11 = dict name, s12 = bak name, reg0; also writes
+  # s10 (username) on the success path, and the _raw helper scratches
+  # reg3 -- battle-result callers hold names in s1/s3/s5, which stay
+  # untouched.
+  # Returns reg0 = 1 on success. reg0 = 0 (nothing written) ONLY when
+  # char_state == 0 AND the acctid slot is 0 -- i.e. truly unhydrated
+  # with no key material. A player with a recorded acctid gets a name
+  # even at char_state 0 (hydrate records the acctid before the load
+  # runs). Callers must check reg0 and skip their dict op on 0.
+  ("coop_char_store_dict_name",
+   [
+       (store_script_param, ":player_no", 1),
+       (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
+       (player_get_slot, ":acctid", ":player_no", slot_player_coop_steam_acctid),
+       (try_begin),
+           (eq, ":char_state", 0),
+           (eq, ":acctid", 0),
+           (assign, reg0, 0),
+       (else_try),
+           (str_store_player_username, s10, ":player_no"),
+           (call_script, "script_coop_char_store_dict_name_raw", ":acctid"),
+       (try_end),
+   ]),
+
+  # coop_char_store_dict_name_raw
+  # param 1: acctid (0 = username keying). Expects username in s10.
+  # Writes s11 = dict name, s12 = bak name, reg0 = 1. For the
+  # disconnected-player battle-result sites that have no player_no.
+  ("coop_char_store_dict_name_raw",
+   [
+       (store_script_param, ":acctid", 1),
+       (try_begin),
+           (neq, ":acctid", 0),
+           (assign, reg3, ":acctid"),
+           (str_store_string, s11, "@coop_char_sid_{reg3}"),
+           (str_store_string, s12, "@coop_char_bak_sid_{reg3}"),
+       (else_try),
+           (str_store_string, s11, "@coop_char_{s10}"),
+           (str_store_string, s12, "@coop_char_bak_{s10}"),
+       (try_end),
+       (assign, reg0, 1),
+   ]),
+
    ("coop_save_character",
    [
        # param 1: player_no
@@ -7522,9 +7591,9 @@ coop_scripts = [
        (player_get_troop_id, ":troop_no", ":player_no"),
        (player_get_party_id, ":party_no", ":player_no"),
 
-       # Build dict name: "coop_char_{username}"
-       (str_store_player_username, s10, ":player_no"),
-       (str_store_string, s11, "@coop_char_{s10}"),
+       # Build dict + bak names (single owner: coop_char_store_dict_name)
+       (call_script, "script_coop_char_store_dict_name", ":player_no"),
+       (eq, reg0, 1),
 
        # Preserve @char_pending_* fields across the dict rebuild.
        # coop_apply_battle_results Phase 1 stashes these into char dicts
@@ -7544,7 +7613,6 @@ coop_scripts = [
        # _bak file so a bad write is manually recoverable.
        (try_begin),
            (dict_has_key, "$coop_char_preserve_dict", "@char_level"),
-           (str_store_string, s12, "@coop_char_bak_{s10}"),
            (dict_save, "$coop_char_preserve_dict", s12),
        (try_end),
        (try_begin),
@@ -7782,9 +7850,12 @@ coop_scripts = [
        (player_get_troop_id, ":troop_no", ":player_no"),
        (player_get_party_id, ":party_no", ":player_no"),
 
-       # Build dict name
+       # Build dict name via the single owner. Load runs pre-hydration by
+       # design (the identify handler / timeout decides the key first), so
+       # use the raw builder on the already-decided acctid slot.
+       (player_get_slot, ":acctid", ":player_no", slot_player_coop_steam_acctid),
        (str_store_player_username, s10, ":player_no"),
-       (str_store_string, s11, "@coop_char_{s10}"),
+       (call_script, "script_coop_char_store_dict_name_raw", ":acctid"),
 
        (dict_create, "$coop_char_dict"),
        (dict_load_file, "$coop_char_dict", s11),
@@ -8057,8 +8128,8 @@ coop_scripts = [
    [
        (store_script_param, ":player_no", 1),
        (store_script_param, ":center_no", 2),
-       (str_store_player_username, s10, ":player_no"),
-       (str_store_string, s11, "@coop_char_{s10}"),
+       (call_script, "script_coop_char_store_dict_name", ":player_no"),
+       (eq, reg0, 1),
        (dict_create, "$coop_char_siege_dict"),
        (dict_load_file, "$coop_char_siege_dict", s11),
        (dict_set_int, "$coop_char_siege_dict", "@char_siege_center", ":center_no"),
@@ -8071,8 +8142,8 @@ coop_scripts = [
    ("coop_char_siege_center_get",
    [
        (store_script_param, ":player_no", 1),
-       (str_store_player_username, s10, ":player_no"),
-       (str_store_string, s11, "@coop_char_{s10}"),
+       (call_script, "script_coop_char_store_dict_name", ":player_no"),
+       (eq, reg0, 1),
        (assign, ":center_no", 0),
        (dict_create, "$coop_char_siege_dict"),
        (dict_load_file, "$coop_char_siege_dict", s11),
@@ -8093,8 +8164,8 @@ coop_scripts = [
    [
        (store_script_param, ":player_no", 1),
        (store_script_param, ":enemy_no", 2),
-       (str_store_player_username, s10, ":player_no"),
-       (str_store_string, s11, "@coop_char_{s10}"),
+       (call_script, "script_coop_char_store_dict_name", ":player_no"),
+       (eq, reg0, 1),
        (dict_create, "$coop_char_lenemy_dict"),
        (dict_load_file, "$coop_char_lenemy_dict", s11),
        (dict_set_int, "$coop_char_lenemy_dict", "@char_local_enemy", ":enemy_no"),
@@ -8107,8 +8178,8 @@ coop_scripts = [
    ("coop_char_local_enemy_get",
    [
        (store_script_param, ":player_no", 1),
-       (str_store_player_username, s10, ":player_no"),
-       (str_store_string, s11, "@coop_char_{s10}"),
+       (call_script, "script_coop_char_store_dict_name", ":player_no"),
+       (eq, reg0, 1),
        (assign, ":enemy_no", 0),
        (dict_create, "$coop_char_lenemy_dict"),
        (dict_load_file, "$coop_char_lenemy_dict", s11),
@@ -8784,90 +8855,87 @@ coop_scripts = [
 		(try_end),
     ]),
 
-   ("multiplayer_campaign_player_joined",
+  # coop_battle_player_hydrate
+  # param 1: player_no, param 2: acctid (0 = username keying).
+  # Battle-server twin of coop_player_hydrate: records the acctid, loads
+  # the char dict (coop_load_character keys via the acctid slot), and sets
+  # the issue-#15 hydration state. No creation path on battle servers -- a
+  # failed load leaves state 0 so the save gates hold. Always clears the
+  # spawn gate (slot_player_join_time) so a failed load still lets the
+  # player spawn and the 5 s timeout can never refire.
+  ("coop_battle_player_hydrate",
    [
-		(store_script_param, ":player_no", 1),
+       (store_script_param, ":player_no", 1),
+       (store_script_param, ":acctid", 2),
+       # Idempotence: timeout racing identify must never re-key/re-load.
+       (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
+       (eq, ":char_state", 0),
+       (player_set_slot, ":player_no", slot_player_join_time, 0),
+       (player_set_slot, ":player_no", slot_player_coop_steam_acctid, ":acctid"),
+       (call_script, "script_coop_load_character", ":player_no"),
+       (try_begin),
+           (eq, reg0, 1),
+           (player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_ready),
+       (else_try),
+           (player_set_slot, ":player_no", slot_player_coop_char_state, 0),
+       (try_end),
+   ]),
 
-		(store_mission_timer_a, ":player_join_time"),
-		(player_set_slot, ":player_no", slot_player_join_time, ":player_join_time"),
-		
-		(str_store_player_username, s0, ":player_no"),
-	   
-		(store_add, ":troop_no", multiplayer_campaign_player_troops_begin, ":player_no"),
-		(troop_set_name, ":troop_no", s0),
-		(player_set_troop_id, ":player_no", ":troop_no"),
-	   
-		(store_add, ":party_no", multiplayer_campaign_player_parties_begin, ":player_no"),
-		(party_set_name, ":party_no", s0),
-		(player_set_party_id, ":player_no", ":party_no"),
-		(enable_party, ":party_no"),
+  # coop_player_hydrate
+  # param 1: player_no, param 2: acctid (0 = username keying).
+  # Records the acctid, loads-or-creates the character, sets the issue-#15
+  # hydration state, applies pending battle results and stashed SP-XP
+  # grants, and pushes the resulting char/inventory state to the client.
+  # Sole hydration entry point: called from the ch49 identify handler or
+  # the 5 s timeout fallback, never from join.
+  ("coop_player_hydrate",
+   [
+       (store_script_param, ":player_no", 1),
+       (store_script_param, ":acctid", 2),
+       # Idempotence: a second identify (or timeout racing identify) must
+       # never re-load or re-key a hydrated character.
+       (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
+       (eq, ":char_state", 0),
+       (player_set_slot, ":player_no", slot_player_coop_steam_acctid, ":acctid"),
 
-		# Load persisted character or create defaults
-		(call_script, "script_coop_load_character", ":player_no"),
-		(assign, ":char_loaded", reg0),
+       # Load persisted character or create defaults
+       (call_script, "script_coop_load_character", ":player_no"),
+       (assign, ":char_loaded", reg0),
 
-		# Hydration state (issue #15): ready only after a successful load; a
-		# dict-less join stays in creation state until char creation completes.
-		(try_begin),
-			(eq, ":char_loaded", 1),
-			(player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_ready),
-		(else_try),
-			(player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_creation),
-		(try_end),
+       # Hydration state (issue #15): ready only after a successful load; a
+       # dict-less join stays in creation state until char creation completes.
+       (try_begin),
+           (eq, ":char_loaded", 1),
+           (player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_ready),
+       (else_try),
+           (player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_creation),
+       (try_end),
 
-		# Apply results for every slot with a pending or ended battle.
-		# (A failed condition op inside try_for_range skips to the next
-		# iteration, so this visits all slots.)
-		(try_for_range, ":bslot", 0, coop_battle_num_slots),
-			(call_script, "script_coop_battle_slot_get_in_progress", ":bslot"),
-			(assign, ":bs_pending", reg0),
-			(call_script, "script_coop_battle_slot_get_ended", ":bslot"),
-			(val_add, ":bs_pending", reg0),
-			(gt, ":bs_pending", 0),
-			(call_script, "script_coop_apply_battle_results", ":player_no", ":bslot"),
-		(try_end),
+       # Apply results for every slot with a pending or ended battle --
+       # runs here, post-load, so casualties and spoils land on the
+       # hydrated party/troop and survive the subsequent saves. (A failed
+       # condition op inside try_for_range skips to the next iteration,
+       # so this visits all slots.)
+       (try_for_range, ":bslot", 0, coop_battle_num_slots),
+           (call_script, "script_coop_battle_slot_get_in_progress", ":bslot"),
+           (assign, ":bs_pending", reg0),
+           (call_script, "script_coop_battle_slot_get_ended", ":bslot"),
+           (val_add, ":bs_pending", reg0),
+           (gt, ":bs_pending", 0),
+           (call_script, "script_coop_apply_battle_results", ":player_no", ":bslot"),
+       (try_end),
 
-		# Re-announce battles still open, so a (re)joining client's B-key
-		# chooser isn't blind to fights started before it connected. The
-		# chooser table is client-side state and dies with the connection;
-		# only the ev-10 push can rebuild it. Runs after the apply loop so
-		# finished slots have already been consumed and closed.
-		(try_for_range, ":aslot", 0, coop_battle_num_slots),
-			(call_script, "script_coop_battle_slot_get_in_progress", ":aslot"),
-			(eq, reg0, 1),
-			(call_script, "script_coop_battle_slot_get_ended", ":aslot"),
-			(eq, reg0, 0),
-			(assign, ":ann_state", coop_battle_state_none),
-			(assign, ":ann_enemy", -1),
-			(dict_create, ":ann_dict"),
-			(try_begin),
-				(call_script, "script_coop_battle_slot_dict_name", ":aslot"),
-				(dict_load_file, ":ann_dict", s41, 2),
-				(dict_get_int, ":ann_state", ":ann_dict", "@battle_state"),
-				(call_script, "script_coop_battle_dict_has_roster_party", ":ann_dict", 0, 0),
-				(eq, reg0, 1),
-				(call_script, "script_coop_battle_dict_read_roster_party", ":ann_dict", 0, 0),
-				(assign, ":ann_enemy", reg0),
-			(try_end),
-			(dict_free, ":ann_dict"),
-			(ge, ":ann_state", coop_battle_state_setup_sp),
-			(le, ":ann_state", coop_battle_state_started),
-			(gt, ":ann_enemy", 0),
-			(store_mul, ":ann_port", ":aslot", 2),
-			(val_add, ":ann_port", coop_battle_port_base),
-			(multiplayer_send_4_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events, multiplayer_event_multiplayer_campaign_server_event_battle_available, ":ann_port", 0, ":ann_enemy"),
-		(try_end),
-
-		# ========================================================
-		# Phase 2: apply this player's pending SP XP delta (if any)
-		# ========================================================
-		# Every rejoiner runs this; if @char_battle_pending was stashed
-		# during Phase 1 of a prior rejoin (or this one), apply now.
-		# Decoupled from battle_state so late rejoiners still get their
-		# delta even after battle_state has been cleared.
+       # ========================================================
+       # Phase 2: apply this player's pending SP XP delta (if any)
+       # ========================================================
+       # Every hydration runs this; if @char_battle_pending was stashed
+       # during Phase 1 of a prior session (or the apply loop just above),
+       # apply now. Decoupled from battle_state so late rejoiners still
+       # get their delta even after battle_state has been cleared.
 		(assign, ":phase2_applied", 0),
-		(str_store_player_username, s10, ":player_no"),
-		(str_store_string, s11, "@coop_char_{s10}"),
+		(try_begin),
+		(call_script, "script_coop_char_store_dict_name", ":player_no"),
+		(eq, reg0, 1),
 		(dict_create, "$coop_char_apply_dict"),
 		(dict_load_file, "$coop_char_apply_dict", s11),
 		(try_begin),
@@ -8965,6 +9033,7 @@ coop_scripts = [
 			(assign, ":phase2_applied", 1),
 		(try_end),
 		(dict_free, "$coop_char_apply_dict"),
+		(try_end),
 
 		# Persist Phase 2 XP. Phase 1 (coop_apply_battle_results) already
 		# saves internally at :52191, so we only save here when Phase 2
@@ -8977,23 +9046,93 @@ coop_scripts = [
 			(call_script, "script_coop_save_character", ":player_no"),
 		(try_end),
 
-		# Char sync must precede the inventory pushes: the engine bounds
-		# troop_set_inventory_slot by getNumInventorySlots()+10 (skill-derived,
-		# 30+6*IM+10), so bag slots above the IM-0 cap are silently dropped
-		# if they arrive before the skill push raises the client troop's IM.
-		(call_script, "script_coop_send_char_sync_to_client", ":player_no"),
-		(call_script, "script_coop_push_player_inventory", ":player_no"),
-		(call_script, "script_coop_send_party_upgradeable_to_client", ":player_no"),
-		(try_begin),
-			(eq, ":char_loaded", 0),
-			# No saved character -- trigger character creation
-			(multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events, multiplayer_event_multiplayer_campaign_server_event_first_join, 0),
+       # Char sync must precede the inventory pushes: the engine bounds
+       # troop_set_inventory_slot by getNumInventorySlots()+10 (skill-derived,
+       # 30+6*IM+10), so bag slots above the IM-0 cap are silently dropped
+       # if they arrive before the skill push raises the client troop's IM.
+       (call_script, "script_coop_send_char_sync_to_client", ":player_no"),
+       (call_script, "script_coop_push_player_inventory", ":player_no"),
+       (call_script, "script_coop_send_party_upgradeable_to_client", ":player_no"),
+       (try_begin),
+           (eq, ":char_loaded", 0),
+           # No saved character -- trigger character creation
+           (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events, multiplayer_event_multiplayer_campaign_server_event_first_join, 0),
+       (try_end),
+   ]),
+
+   ("multiplayer_campaign_player_joined",
+   [
+		(store_script_param, ":player_no", 1),
+
+		# Hydration-fallback countdown (NOT a timestamp): 10 passes of the
+		# 0.5 s timeout trigger in module_simple_triggers.py = ~5 s. Tick
+		# math avoids relying on store_mission_timer_a advancing on the
+		# dedicated campaign personality (unverified engine fact).
+		(player_set_slot, ":player_no", slot_player_join_time, 10),
+
+		(str_store_player_username, s0, ":player_no"),
+
+		(store_add, ":troop_no", multiplayer_campaign_player_troops_begin, ":player_no"),
+		(troop_set_name, ":troop_no", s0),
+		(player_set_troop_id, ":player_no", ":troop_no"),
+
+		(store_add, ":party_no", multiplayer_campaign_player_parties_begin, ":player_no"),
+		(party_set_name, ":party_no", s0),
+		(player_set_party_id, ":player_no", ":party_no"),
+		(enable_party, ":party_no"),
+
+		# Hydration is deferred to the ch49 identify event (or the 5 s
+		# timeout fallback in module_simple_triggers.py) so the char dict
+		# can be keyed by Steam account id. Char state stays 0 until then;
+		# saves are #15-gated on it.
+		(player_set_slot, ":player_no", slot_player_coop_char_state, 0),
+		(player_set_slot, ":player_no", slot_player_coop_steam_acctid, 0),
+
+		# Battle-result application and the pending SP-XP apply run from
+		# coop_player_hydrate: both mutate the player's troop/party and
+		# must only ever touch a hydrated character.
+
+		# Re-announce battles still open, so a (re)joining client's B-key
+		# chooser isn't blind to fights started before it connected. The
+		# chooser table is client-side state and dies with the connection;
+		# only the ev-10 push can rebuild it. The ended==0 filter below
+		# skips finished slots even though the apply loop (now in
+		# coop_player_hydrate) hasn't consumed them yet.
+		(try_for_range, ":aslot", 0, coop_battle_num_slots),
+			(call_script, "script_coop_battle_slot_get_in_progress", ":aslot"),
+			(eq, reg0, 1),
+			(call_script, "script_coop_battle_slot_get_ended", ":aslot"),
+			(eq, reg0, 0),
+			(assign, ":ann_state", coop_battle_state_none),
+			(assign, ":ann_enemy", -1),
+			(dict_create, ":ann_dict"),
+			(try_begin),
+				(call_script, "script_coop_battle_slot_dict_name", ":aslot"),
+				(dict_load_file, ":ann_dict", s41, 2),
+				(dict_get_int, ":ann_state", ":ann_dict", "@battle_state"),
+				(call_script, "script_coop_battle_dict_has_roster_party", ":ann_dict", 0, 0),
+				(eq, reg0, 1),
+				(call_script, "script_coop_battle_dict_read_roster_party", ":ann_dict", 0, 0),
+				(assign, ":ann_enemy", reg0),
+			(try_end),
+			(dict_free, ":ann_dict"),
+			(ge, ":ann_state", coop_battle_state_setup_sp),
+			(le, ":ann_state", coop_battle_state_started),
+			(gt, ":ann_enemy", 0),
+			(store_mul, ":ann_port", ":aslot", 2),
+			(val_add, ":ann_port", coop_battle_port_base),
+			(multiplayer_send_4_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events, multiplayer_event_multiplayer_campaign_server_event_battle_available, ":ann_port", 0, ":ann_enemy"),
 		(try_end),
+
+		# Char sync, inventory push, and the first-join notice are issued
+		# from coop_player_hydrate once the character is actually loaded
+		# (deferred to the ch49 identify event / 5 s timeout fallback) --
+		# nothing here can assume a hydrated char yet.
 
 		(multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events, multiplayer_event_multiplayer_campaign_server_event_camera_follow_party, ":party_no"),
 
 		(call_script, "script_multiplayer_campaign_send_initial_information", ":player_no"),
-		
+
 		(try_for_players, ":current_player_no", 1),
 			(multiplayer_send_2_int_to_player, ":current_player_no", multiplayer_event_multiplayer_campaign_server_events, multiplayer_event_multiplayer_campaign_server_event_player_joined, ":player_no"),
 		(try_end),
@@ -10397,6 +10536,17 @@ coop_scripts = [
             (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
                 multiplayer_event_multiplayer_campaign_server_event_char_sync_done, 0),
         (else_try),
+            (eq, ":event_type", multiplayer_event_multiplayer_campaign_identify),  # 8
+            (store_script_param, ":acct_lo", 3),
+            (store_script_param, ":acct_hi", 4),
+            (val_max, ":acct_lo", 0),
+            (val_min, ":acct_lo", 0xFFFF),
+            (val_max, ":acct_hi", 0),
+            (val_min, ":acct_hi", 0xFFFF),
+            (store_mul, ":acctid", ":acct_hi", 0x10000),
+            (val_add, ":acctid", ":acct_lo"),
+            (call_script, "script_coop_player_hydrate", ":player_no", ":acctid"),
+        (else_try),
             (eq, ":event_type", multiplayer_event_multiplayer_campaign_request_inv_sync),  # 13
             # Inventory-window open: re-push the authoritative inventory so
             # the client's close-diff baseline is server state, not a local
@@ -11155,9 +11305,18 @@ coop_scripts = [
 					(troop_set_slot, ":lord_troop", slot_troop_leaded_party, -1),
 					(assign, reg23, ":top_idx"),
 					(dict_get_str, s5, "$coop_dict", "@battle_player_{reg23}_name"),
-					(str_store_string, s6, "@coop_char_{s5}"),
+					# Key by the acctid captured at battle-write time (spec 3a);
+					# missing key (pre-branch battle dict) falls back to 0 =
+					# username keying.
+					(assign, ":st_acctid", 0),
+					(try_begin),
+						(dict_has_key, "$coop_dict", "@battle_player_{reg23}_acctid"),
+						(dict_get_int, ":st_acctid", "$coop_dict", "@battle_player_{reg23}_acctid"),
+					(try_end),
+					(str_store_string, s10, s5),
+					(call_script, "script_coop_char_store_dict_name_raw", ":st_acctid"),
 					(dict_create, "$coop_a7_stash_dict"),
-					(dict_load_file, "$coop_a7_stash_dict", s6),
+					(dict_load_file, "$coop_a7_stash_dict", s11),
 					(assign, ":lidx", 0),
 					(try_begin),
 						(dict_has_key, "$coop_a7_stash_dict", "@char_pending_pris_stacks"),
@@ -11169,7 +11328,7 @@ coop_scripts = [
 					(val_add, ":lidx", 1),
 					(dict_set_int, "$coop_a7_stash_dict", "@char_pending_pris_stacks", ":lidx"),
 					(dict_set_int, "$coop_a7_stash_dict", "@char_battle_pending", 1),
-					(dict_save, "$coop_a7_stash_dict", s6),
+					(dict_save, "$coop_a7_stash_dict", s11),
 					(dict_free, "$coop_a7_stash_dict"),
 					(display_message, "@[A7] {s4} was taken prisoner (to {s5})."),
 				(try_end),
@@ -11185,9 +11344,18 @@ coop_scripts = [
 		(try_for_range, reg25, 0, ":num_bp"),
 			(dict_get_int, ":my_str", "$coop_dict", "@battle_player_{reg25}_strength"),
 			(dict_get_str, s1, "$coop_dict", "@battle_player_{reg25}_name"),
-			(str_store_string, s2, "@coop_char_{s1}"),
+			# Key by the acctid captured at battle-write time (spec 3a);
+			# missing key (pre-branch battle dict) falls back to 0 =
+			# username keying.
+			(assign, ":st_acctid", 0),
+			(try_begin),
+				(dict_has_key, "$coop_dict", "@battle_player_{reg25}_acctid"),
+				(dict_get_int, ":st_acctid", "$coop_dict", "@battle_player_{reg25}_acctid"),
+			(try_end),
+			(str_store_string, s10, s1),
+			(call_script, "script_coop_char_store_dict_name_raw", ":st_acctid"),
 			(dict_create, "$coop_a7_stash_dict"),
-			(dict_load_file, "$coop_a7_stash_dict", s2),
+			(dict_load_file, "$coop_a7_stash_dict", s11),
 
 			# gold_i = raw_pool * my_str / total * roll / 100, cap 60000
 			(store_mul, ":gold_i", ":raw_pool", ":my_str"),
@@ -11226,7 +11394,7 @@ coop_scripts = [
 			(dict_set_int, "$coop_a7_stash_dict", "@char_pending_pris_stacks", ":pidx"),
 
 			(dict_set_int, "$coop_a7_stash_dict", "@char_battle_pending", 1),
-			(dict_save, "$coop_a7_stash_dict", s2),
+			(dict_save, "$coop_a7_stash_dict", s11),
 			(dict_free, "$coop_a7_stash_dict"),
 			(assign, reg1, ":gold_i"),
 			(assign, reg2, ":renown_val"),
@@ -11394,11 +11562,19 @@ coop_scripts = [
 						(assign, ":is_host", 1),
 					(try_end),
 
-					# Build char dict path: "@coop_char_{username}"
-					(str_store_string, s2, "@coop_char_{s1}"),
+					# Key by the acctid captured at battle-write time (spec 3a);
+					# missing key (pre-branch battle dict) falls back to 0 =
+					# username keying.
+					(assign, ":st_acctid", 0),
+					(try_begin),
+						(dict_has_key, "$coop_dict", "@battle_player_{reg20}_acctid"),
+						(dict_get_int, ":st_acctid", "$coop_dict", "@battle_player_{reg20}_acctid"),
+					(try_end),
+					(str_store_string, s10, s1),
+					(call_script, "script_coop_char_store_dict_name_raw", ":st_acctid"),
 
 					(dict_create, "$coop_char_stash_dict"),
-					(dict_load_file, "$coop_char_stash_dict", s2),
+					(dict_load_file, "$coop_char_stash_dict", s11),
 
 					(try_begin),
 						(eq, ":is_host", 1),
@@ -11413,7 +11589,7 @@ coop_scripts = [
 						(display_message, "@[BATTLE RESULTS] Phase1: stashed JOINER {s1} hero_xp={reg1}"),
 					(try_end),
 					(dict_set_int, "$coop_char_stash_dict", "@char_battle_pending", 1),
-					(dict_save, "$coop_char_stash_dict", s2),
+					(dict_save, "$coop_char_stash_dict", s11),
 					(dict_free, "$coop_char_stash_dict"),
 				(try_end),
 			(else_try),
@@ -11840,8 +12016,9 @@ coop_scripts = [
    [
        (store_script_param, ":player_no", 1),
        (player_get_troop_id, ":troop_no", ":player_no"),
-       (str_store_player_username, s10, ":player_no"),
-       (str_store_string, s11, "@coop_char_{s10}"),
+       (try_begin),
+       (call_script, "script_coop_char_store_dict_name", ":player_no"),
+       (eq, reg0, 1),
 
        (dict_create, "$coop_inv_base"),
        (dict_load_file, "$coop_inv_base", s11),
@@ -11933,6 +12110,7 @@ coop_scripts = [
            (call_script, "script_coop_push_player_inventory", ":player_no"),
        (try_end),
        (dict_free, "$coop_inv_base"),
+       (try_end),
    ]),
 
    # Sends the player's 9 equipment slots to the client via coop_event_inv_troop_set_slot.

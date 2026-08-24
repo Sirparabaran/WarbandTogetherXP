@@ -54,7 +54,81 @@ coop_server_check_polls = (
     ])
 
 
-coop_store_respawn_as_bot = (  
+# Client identify (battle-mission counterpart of the campaign send in
+# module_simple_triggers.py). Self-report the Steam acctid over ch126 so
+# the battle server keys the character load by acctid. Retry semantics,
+# same as the campaign side: each 1 s tick, wait for the ASI to republish
+# a nonzero $g_coop_my_steam_acctid; only after 5 empty ticks (~5 s:
+# non-Steam client) send 0/0 (username keying for the session). One send
+# per connection -- $g_coop_identify_sent/$g_coop_identify_ticks re-arm
+# per connect (engine wipes module globals on every join).
+coop_battle_identify_send = (
+      1, 0, 0,
+       [(neg|multiplayer_is_server),
+        (eq, "$g_coop_identify_sent", 0),
+       ],
+       [
+        (assign, ":acct_lo", "$g_coop_my_steam_acctid"),
+        (assign, ":do_send", 0),
+        (try_begin),
+            (gt, ":acct_lo", 0),
+            (assign, ":do_send", 1),
+        (else_try),
+            (val_add, "$g_coop_identify_ticks", 1),
+            (ge, "$g_coop_identify_ticks", 5),
+            (assign, ":do_send", 1),
+        (try_end),
+        (eq, ":do_send", 1),
+        (assign, ":acct_hi", ":acct_lo"),
+        (val_mod, ":acct_lo", 0x10000),
+        (val_div, ":acct_hi", 0x10000),
+        (multiplayer_send_3_int_to_server, multiplayer_event_coop_send_to_server, coop_event_identify, ":acct_lo", ":acct_hi"),
+        (assign, "$g_coop_identify_sent", 1),
+       ])
+
+# Server hydration timeout fallback: a player who never sends identify
+# within ~5 s of joining (old/modified client) is hydrated with acctid 0
+# (username keying). The join-time gate is one-shot -- hydrate zeroes
+# slot_player_join_time, which also releases the spawn gate.
+#
+# The first arm handles the engine's startMission slot wipe (the battle
+# server restarts the mission right after first join): a wiped player has
+# char_state 0 AND join_time 0, which would otherwise open the spawn gate
+# unhydrated and starve this timeout forever. Re-stamping a fresh window
+# re-hydrates them within ~5 s -- necessarily via username fallback, since
+# the client's $g_coop_identify_sent latch survives a server-side wipe so
+# identify cannot re-arrive. The spawned_this_round gate keeps the arm off
+# players who already spawned via the failed-load path (hydrate leaves
+# char_state 0 + join_time 0 on a failed load by design), so a dict-less
+# player is not re-stamped into an endless hydrate-retry loop.
+coop_battle_hydrate_timeout = (
+      1, 0, 0,
+       [(multiplayer_is_server)],
+       [
+        (store_mission_timer_a, ":now"),
+        (get_max_players, ":num_players"),
+        (try_for_range, ":player_no", 1, ":num_players"),
+            (player_is_active, ":player_no"),
+            (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
+            (eq, ":char_state", 0),
+            (player_get_slot, ":bjoin_time", ":player_no", slot_player_join_time),
+            (try_begin),
+                (eq, ":bjoin_time", 0),
+                (player_slot_eq, ":player_no", slot_player_spawned_this_round, 0),
+                # Post-wipe recovery: open a fresh ~5 s hydration window.
+                (store_mission_timer_a, ":bjoin_time"),
+                (val_max, ":bjoin_time", 1),
+                (player_set_slot, ":player_no", slot_player_join_time, ":bjoin_time"),
+            (else_try),
+                (gt, ":bjoin_time", 0),
+                (store_sub, ":waited", ":now", ":bjoin_time"),
+                (gt, ":waited", 5),
+                (call_script, "script_coop_battle_player_hydrate", ":player_no", 0),
+            (try_end),
+        (try_end),
+       ])
+
+coop_store_respawn_as_bot = (
       ti_on_agent_killed_or_wounded, 0, 0, [(multiplayer_is_server)],
        [
          (store_trigger_param_1, ":dead_agent_no"),
@@ -412,6 +486,8 @@ coop_mission_templates = [
       coop_server_check_polls,
       coop_server_reduce_damage,
       coop_respawn_as_bot,
+      coop_battle_identify_send,
+      coop_battle_hydrate_timeout,
       coop_store_respawn_as_bot,
 
 
@@ -458,18 +534,17 @@ coop_mission_templates = [
           (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_return_next_team_faction, 1, "$coop_team_1_faction"),
           (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_return_next_team_faction, 2, "$coop_team_2_faction"),
           (player_set_team_no, ":player_no", 1),
-          # Assign campaign troop and load character data from persisted dict
+          # Assign campaign troop; character load is deferred to ch126
+          # coop_event_identify (5 s username fallback in
+          # coop_battle_hydrate_timeout). Spawn is gated on join_time == 0
+          # (spec 4a) -- hydrate clears it.
           (store_add, ":troop_no", multiplayer_campaign_player_troops_begin, ":player_no"),
           (player_set_troop_id, ":player_no", ":troop_no"),
-          (call_script, "script_coop_load_character", ":player_no"),
-          # Hydration state (issue #15): battle-server saves (raise arms) are
-          # gated on a completed load -- a failed load must never persist.
-          (try_begin),
-            (eq, reg0, 1),
-            (player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_ready),
-          (else_try),
-            (player_set_slot, ":player_no", slot_player_coop_char_state, 0),
-          (try_end),
+          (store_mission_timer_a, ":bjoin_time"),
+          (val_max, ":bjoin_time", 1),
+          (player_set_slot, ":player_no", slot_player_join_time, ":bjoin_time"),
+          (player_set_slot, ":player_no", slot_player_coop_char_state, 0),
+          (player_set_slot, ":player_no", slot_player_coop_steam_acctid, 0),
         (try_end),
 
          ]),
@@ -584,6 +659,9 @@ coop_mission_templates = [
           (player_is_active, ":player_no"),
           (neg|player_is_busy_with_menus, ":player_no"),
           (player_slot_eq, ":player_no", slot_player_spawned_this_round, 0),
+          # Spawn gate (spec 4a): no spawn until hydration ran (identify or
+          # the 5 s fallback) -- hydrate zeroes slot_player_join_time.
+          (player_slot_eq, ":player_no", slot_player_join_time, 0),
           (player_get_agent_id, ":agent_id", ":player_no"),
           (lt, ":agent_id", 0),
           (player_get_team_no, ":team", ":player_no"),
@@ -4584,6 +4662,8 @@ coop_mission_templates = [
       coop_server_check_polls,
       coop_server_reduce_damage,
       coop_respawn_as_bot,
+      coop_battle_identify_send,
+      coop_battle_hydrate_timeout,
       coop_store_respawn_as_bot,
 
 
@@ -4623,15 +4703,14 @@ coop_mission_templates = [
           (player_set_team_no, ":player_no", "$attacker_team"),
           (store_add, ":troop_no", multiplayer_campaign_player_troops_begin, ":player_no"),
           (player_set_troop_id, ":player_no", ":troop_no"),
-          (call_script, "script_coop_load_character", ":player_no"),
-          # Hydration state (issue #15): battle-server saves (raise arms) are
-          # gated on a completed load -- a failed load must never persist.
-          (try_begin),
-            (eq, reg0, 1),
-            (player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_ready),
-          (else_try),
-            (player_set_slot, ":player_no", slot_player_coop_char_state, 0),
-          (try_end),
+          # Character load deferred to ch126 coop_event_identify (5 s
+          # username fallback in coop_battle_hydrate_timeout). Spawn is
+          # gated on join_time == 0 (spec 4a) -- hydrate clears it.
+          (store_mission_timer_a, ":bjoin_time"),
+          (val_max, ":bjoin_time", 1),
+          (player_set_slot, ":player_no", slot_player_join_time, ":bjoin_time"),
+          (player_set_slot, ":player_no", slot_player_coop_char_state, 0),
+          (player_set_slot, ":player_no", slot_player_coop_steam_acctid, 0),
         (try_end),
        ]),
 
@@ -4802,6 +4881,9 @@ coop_mission_templates = [
           (player_is_active, ":player_no"),
           (neg|player_is_busy_with_menus, ":player_no"),
           (player_slot_eq, ":player_no", slot_player_spawned_this_round, 0),
+          # Spawn gate (spec 4a): no spawn until hydration ran (identify or
+          # the 5 s fallback) -- hydrate zeroes slot_player_join_time.
+          (player_slot_eq, ":player_no", slot_player_join_time, 0),
           (player_get_agent_id, ":agent_id", ":player_no"),
           (lt, ":agent_id", 0),
           (player_get_team_no, ":team", ":player_no"),

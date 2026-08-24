@@ -9,4 +9,12 @@
 int hook_install(DWORD target_addr, void *detour_func, int bytes_to_copy,
                  BYTE *saved_bytes, DWORD *trampoline_addr);
 
+/* Same as hook_install, but first verifies the bytes at target_addr match
+   expected_bytes (bytes_to_copy of them). On mismatch, logs and returns 0
+   without writing anything. Pass expected_bytes = NULL to skip the check
+   (this is what hook_install does). */
+int hook_install_verified(DWORD target_addr, void *detour_func, int bytes_to_copy,
+                          const BYTE *expected_bytes, BYTE *saved_bytes,
+                          DWORD *trampoline_addr);
+
 void hook_remove(DWORD target_addr, const BYTE *saved_bytes, int bytes_to_copy);

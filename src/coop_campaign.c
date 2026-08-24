@@ -16,6 +16,7 @@
 #include "wsedict.h"
 #include "modglobals.h"
 #include "nettune.h"
+#include "xp.h"
 #include <shlobj.h>  /* SHGetFolderPathA */
 
 /* ------------------------------------------------------------------ */
@@ -83,12 +84,7 @@ static void *g_ipc_peer_slot[IPC_MAX_BATTLE_SLOTS];      /* COOP_HOST: ENet peer
 /* ------------------------------------------------------------------ */
 
 static DWORD g_fm_trampoline = 0;
-static BYTE  g_fm_saved[FRAMEMOVE_PROLOGUE_SIZE];
-
-/* recalc_path_roster recursion guard */
-static BYTE  g_rpr_saved[16];
-static DWORD g_rpr_trampoline;
-static int   g_rpr_depth = 0;
+static BYTE  g_fm_saved[CAMP_CAMPAIGN_TICK_PROLOGUE_SIZE];
 
 static DWORD g_mask_refresh_tick = 0;   /* IPC-thread mask republish cadence */
 
@@ -103,12 +99,17 @@ static void coop_on_ipc_event(void *peer, int connected);
 static void update_slots_online_mask(void);
 
 /* ------------------------------------------------------------------ */
-/*  FrameMove detour                                                  */
+/*  FrameMove detour -- installed at the campaign exe's mbGame::frameMove   */
+/*  (CAMP_ADDR_CAMPAIGN_TICK). Runs both coop callbacks between ticks, then */
+/*  jmp's into the trampoline so the hooked function's own return goes      */
+/*  straight back to the engine caller.                                     */
 /* ------------------------------------------------------------------ */
 
 __declspec(naked) void framemove_detour(void) {
     __asm {
-        /* === PRE-TICK: network polling === */
+        /* Between-ticks coop processing (net poll + deferred commands).
+           Must be jmp-style: a call into the trampoline would shift the
+           hooked function's argument frame by one slot. */
         sub  esp, 64
         movdqu [esp],      xmm0
         movdqu [esp + 16], xmm1
@@ -118,27 +119,6 @@ __declspec(naked) void framemove_detour(void) {
         sub  esp, 112
         fsave [esp]
         call coop_on_frame
-        frstor [esp]
-        add  esp, 112
-        popad
-        movdqu xmm0, [esp]
-        movdqu xmm1, [esp + 16]
-        movdqu xmm2, [esp + 32]
-        movdqu xmm3, [esp + 48]
-        add  esp, 64
-
-        /* === RUN ORIGINAL mbGame::frameMove via trampoline === */
-        call dword ptr [g_fm_trampoline]
-
-        /* === POST-TICK: process deferred commands (set_xp, etc) === */
-        sub  esp, 64
-        movdqu [esp],      xmm0
-        movdqu [esp + 16], xmm1
-        movdqu [esp + 32], xmm2
-        movdqu [esp + 48], xmm3
-        pushad
-        sub  esp, 112
-        fsave [esp]
         call coop_post_frame
         frstor [esp]
         add  esp, 112
@@ -148,7 +128,7 @@ __declspec(naked) void framemove_detour(void) {
         movdqu xmm2, [esp + 32]
         movdqu xmm3, [esp + 48]
         add  esp, 64
-        ret
+        jmp  dword ptr [g_fm_trampoline]
     }
 }
 
@@ -213,8 +193,10 @@ static void coop_on_frame(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  coop_post_frame — runs AFTER mbGame::frameMove (scripts done)      */
-/*  Processes deferred commands that scripts signalled via globals.     */
+/*  coop_post_frame — runs between ticks, just before the next          */
+/*  mbGame::frameMove call (jmp-style detour, see framemove_detour).    */
+/*  Processes deferred commands the previous tick's scripts signalled   */
+/*  via globals.                                                        */
 /* ------------------------------------------------------------------ */
 
 static void coop_post_frame(void) {
@@ -299,32 +281,23 @@ static void coop_post_frame(void) {
                    Each troop struct is TROOP_STRIDE bytes.
                    m_experience at +0x164, m_level at +0x178 (same as client). */
                 char *troop_arr = *(char **)((char *)game + CAMP_OFF_TROOP_ARRAY);
-                if (troop_arr) {
+                int num_troops  = *(int *)((char *)game + CAMP_OFF_NUM_TROOPS);
+                if (troop_arr && troop_id >= 0 && troop_id < num_troops) {
                     char *troop = troop_arr + (unsigned)troop_id * CAMP_TROOP_STRIDE;
                     int old_xp = *(int *)(troop + 0x164);
+                    const int *level_table = (const int *)REBASE(CAMP_ADDR_LEVEL_TABLE);
+                    float mult = *(float *)REBASE(CAMP_ADDR_LEVEL_BOUNDARY_MULT);
                     *(int *)(troop + 0x164) = xp_value;
-
-                    /* Recompute m_level from XP.
-                       g_levelTable thresholds — hardcoded from RE of
-                       addExperienceToTroop (engine values, fLevelBoundaryMultiplier=1.0). */
-                    {
-                        static const int xp_table[] = {
-                            0, 0, 600, 1360, 2296, 3426, 4768, 6345,
-                            8179, 10297, 13010, 16161, 19806, 24007, 28832, 34362,
-                            40682, 47892, 56103, 65441, 77233, 90809, 106425, 124371,
-                            144981, 168636, 195769, 226879, 262533, 303381, 350164, 412091,
-                            484440, 568947, 667638, 782877, 917424, 1074494, 1257843, 1471851,
-                            1721626, 2070551, 2489361, 2992033, 3595340, 4319408, 5188389, 6231267
-                        };
-                        int level = 0;
-                        int max_lvl = (sizeof(xp_table)/sizeof(xp_table[0])) - 1;
-                        while (level < max_lvl && xp_value >= xp_table[level + 1])
-                            level++;
-                        *(int *)(troop + 0x178) = level;
-                    }
+                    /* Level only -- per-level point awards intentionally NOT granted here:
+                       points come from the saved character dict, not from this write. */
+                    *(int *)(troop + 0x178) = coop_level_from_xp(level_table,
+                                                                 CAMP_LEVEL_TABLE_ENTRIES,
+                                                                 mult, xp_value);
                     coop_log("[set_xp] troop=%d old_xp=%d new_xp=%d level=%d\n",
-                             troop_id, old_xp, xp_value,
-                             *(int *)(troop + 0x178));
+                             troop_id, old_xp, xp_value, *(int *)(troop + 0x178));
+                } else if (troop_arr) {
+                    coop_log("[set_xp] REJECT troop=%d out of range (num_troops=%d)\n",
+                             troop_id, num_troops);
                 }
             }
             modglobals_set(g_gvar_set_xp_go, 0);
@@ -373,29 +346,6 @@ static void coop_load_ini(const char *dll_dir) {
              g_coop_mode == COOP_HOST ? "host" : "battle",
              g_port, g_host_ip, g_module_name,
              g_server_password[0] ? "set" : "none");
-}
-
-/* ------------------------------------------------------------------ */
-/*  recalc_path_roster recursion guard                                 */
-/* ------------------------------------------------------------------ */
-
-__declspec(naked) void recalc_path_roster_detour(void) {
-    __asm {
-        inc  dword ptr [g_rpr_depth]
-        cmp  dword ptr [g_rpr_depth], MAX_ROSTER_RECURSION_DEPTH
-        jg   bail_out
-
-        push dword ptr [esp + 8]
-        push dword ptr [esp + 8]
-        call dword ptr [g_rpr_trampoline]
-        dec  dword ptr [g_rpr_depth]
-        ret  8
-
-    bail_out:
-        dec  dword ptr [g_rpr_depth]
-        xor  eax, eax
-        ret  8
-    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -610,46 +560,40 @@ static DWORD WINAPI battle_poll_thread_func(LPVOID param) {
 /* ------------------------------------------------------------------ */
 
 static void install_hooks(void) {
-    /* ISOLATION TEST: hook mbGame::frameMove (campaign_tick) for per-frame polling.
-       CD3DApp::FrameMove is WSE2-hooked at runtime — can't use it. */
-    hook_install(REBASE(ADDR_CAMPAIGN_TICK), framemove_detour,
-                 CAMPAIGN_TICK_PROLOGUE_SIZE, g_fm_saved, &g_fm_trampoline);
-    coop_log("framemove hook installed (via campaign_tick 0x%X)\n", REBASE(ADDR_CAMPAIGN_TICK));
-
-    hook_install(REBASE(ADDR_RECALC_PATH_ROSTER), recalc_path_roster_detour,
-                 RECALC_PATH_ROSTER_PROLOGUE_SIZE, g_rpr_saved, &g_rpr_trampoline);
-    coop_log("recalc_path_roster recursion guard installed (max depth %d)\n",
-             MAX_ROSTER_RECURSION_DEPTH);
+    /* Campaign-exe mbGame::frameMove (PDB-derived; the client VA
+       ADDR_CAMPAIGN_TICK is a DIFFERENT binary and must never be
+       patched here — see findings "B2 fix addresses"). */
+    static const BYTE fm_expected[CAMP_CAMPAIGN_TICK_PROLOGUE_SIZE] =
+        CAMP_CAMPAIGN_TICK_PROLOGUE_BYTES;
+    if (!hook_install_verified(REBASE(CAMP_ADDR_CAMPAIGN_TICK), framemove_detour,
+                               CAMP_CAMPAIGN_TICK_PROLOGUE_SIZE, fm_expected,
+                               g_fm_saved, &g_fm_trampoline)) {
+        coop_log("framemove hook REFUSED (byte mismatch) — per-frame coop "
+                 "processing (set_xp, deferred commands) is OFFLINE\n");
+        return;
+    }
+    coop_log("framemove hook installed at campaign mbGame::frameMove 0x%X\n",
+             REBASE(CAMP_ADDR_CAMPAIGN_TICK));
 }
 
 /* ------------------------------------------------------------------ */
-/*  Binary patches (encounter skip, edge scroll, AI walk limit,        */
-/*  widget null-bypass, destructor guard, duplicate name NOP)          */
+/*  Binary patches (AI walk limit)                                    */
 /* ------------------------------------------------------------------ */
 
 static void install_patches(void) {
-    /* Increase AI path pre-walk limit (WSE2 default is 6, bump to 100) */
-    {
-        DWORD old_prot;
-        BYTE *p = (BYTE *)REBASE(ADDR_AI_PATH_WALK_LIMIT);
-        VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &old_prot);
-        *p = 0x64;
-        VirtualProtect(p, 1, old_prot, &old_prot);
-        coop_log("AI path walk limit increased to 100\n");
+    /* AI path pre-walk limit 6 -> 100 (campaign-exe site, PDB-derived).
+       Verify-before-write: stock imm8 must be 0x06. */
+    DWORD old_prot;
+    BYTE *p = (BYTE *)REBASE(CAMP_ADDR_AI_PATH_WALK_LIMIT);
+    if (*p != 0x06) {
+        coop_log("AI walk-limit patch SKIPPED: byte at 0x%08X is 0x%02X, "
+                 "expected 0x06\n", (DWORD)p, *p);
+        return;
     }
-
-    /* MP screen widget null-bypass — DISABLED for WSE2 (addresses unverified,
-       not needed with dedicated battle server architecture) */
-
-    /* Slot-array destructor guard — DISABLED for WSE2 (vanilla address,
-       not needed with dedicated battle server architecture) */
-
-    /* Duplicate name check, browse thread cleanup — DISABLED for WSE2
-       (vanilla addresses, not needed with dedicated battle server) */
-
-    /* Serial validation, name check, browse cleanup — ALL DISABLED for WSE2.
-       These patches use vanilla addresses not yet mapped to WSE2, and are
-       not needed with the dedicated battle server architecture. */
+    VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &old_prot);
+    *p = 0x64;
+    VirtualProtect(p, 1, old_prot, &old_prot);
+    coop_log("AI path walk limit increased to 100\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -766,10 +710,9 @@ void campaign_init_from_ini(const char *dll_dir) {
     /* Write server config dict (both campaign and battle personalities) */
     write_server_cfg_dict();
 
-    /* Battle server binary has different function addresses from client/campaign.
-       Hooks use client addresses via REBASE() -- installing them on the battle
-       server would patch random code and crash. Skip all hooks for COOP_BATTLE;
-       battle end detection uses a polling thread instead (no engine hook needed). */
+    /* Hooks and patches use campaign-exe PDB addresses; the battle exe is a
+       different binary with its own layout -- skip all hooks for COOP_BATTLE.
+       Battle end detection uses a polling thread instead (no engine hook needed). */
     if (g_coop_mode != COOP_BATTLE)
         install_hooks();
 
@@ -809,9 +752,9 @@ void campaign_shutdown(void) {
         return;
     }
 
-    /* framemove_detour is installed at ADDR_CAMPAIGN_TICK (see install_hooks) */
-    hook_remove(REBASE(ADDR_CAMPAIGN_TICK), g_fm_saved, CAMPAIGN_TICK_PROLOGUE_SIZE);
-    hook_remove(REBASE(ADDR_RECALC_PATH_ROSTER), g_rpr_saved, RECALC_PATH_ROSTER_PROLOGUE_SIZE);
+    /* framemove_detour is installed at CAMP_ADDR_CAMPAIGN_TICK (see install_hooks) */
+    if (g_fm_trampoline)
+        hook_remove(REBASE(CAMP_ADDR_CAMPAIGN_TICK), g_fm_saved, CAMP_CAMPAIGN_TICK_PROLOGUE_SIZE);
     if (g_log) {
         coop_log("warband_coop unloaded\n");
         fclose(g_log);

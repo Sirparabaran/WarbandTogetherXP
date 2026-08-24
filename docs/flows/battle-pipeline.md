@@ -1,13 +1,18 @@
 # Flow: Battle Pipeline (dedicated battle end-to-end)
 
 **Status:** AUDITED
-**Validated against commit:** `9681486` (net-optimizations: ch125 ev 14's
-history note corrected — its A7-era reuse as `char_sync_renown` is itself
-now superseded by the packed char-sync (ev 36-40, see `xp-sync.md`), so
-ev 14 is free again. Prior stamp `0b2500a`: multiserver pass — sequence,
-anchors, state, and invariants updated to the per-slot battle pool —
-PR #11 + battle chooser + join-time ev-10 re-announce, all
-runtime-verified 2026-07-18; prior stamp `632466c` for the A9 row flip)
+**Validated against commit:** `ce0e287` (steamid persistence,
+runtime-verified 2026-08-23: char dicts keyed by Steam acctid
+(`coop_char_sid_<acctid>` via the `coop_char_store_dict_name` key-builders);
+campaign result apply + Phase 2 XP moved out of the join handler into
+`coop_player_hydrate` (triggered by ch49 identify ev 8 or a 5 s timeout);
+battle-server char load deferred behind a hydration spawn gate (ch126
+identify ev 54 / 5 s fallback); battle dict gains
+`@battle_player_{i}_acctid` for reward keying. Hydration-affected rows
+re-anchored @ `ce0e287`; other rows still carry `0b2500a` line numbers.
+Prior stamp `9681486`: ev 14 freed by the packed char-sync; prior stamp
+`0b2500a`: multiserver pass, runtime-verified 2026-07-18; prior stamp
+`632466c` for the A9 row flip)
 
 ## Scope
 
@@ -43,8 +48,8 @@ sequenceDiagram
     CS->>C: ch125 battle_available (10) to ALL players:<br/>(port 7241+2*slot, is_initiator, enemy party)
     Note over C: initiator: $g_coop_battle_connect_pending, deferred<br/>game-loop trigger connects; others: chooser table row,<br/>B key opens mnu_coop_join_battle
     C->>BS: join (port 7241 + 2*slot)
-    BS->>BS: ti_server_player_joined: first join loads slot dict<br/>(coop_on_admin_panel_load), assigns campaign troop,<br/>coop_load_character
-    BS->>BS: spawn gate (slot_player_spawned_this_round),<br/>ti_on_agent_spawn: coop_equip_player_agent
+    BS->>BS: ti_server_player_joined: first join loads slot dict<br/>(coop_on_admin_panel_load), assigns campaign troop;<br/>char load deferred to coop_battle_player_hydrate<br/>(ch126 identify (54) or 5 s username fallback)
+    BS->>BS: spawn gate (slot_player_spawned_this_round +<br/>hydration gate slot_player_join_time == 0),<br/>ti_on_agent_spawn: coop_equip_player_agent
     Note over BS: fight -- damage/4, one life,<br/>optional respawn-as-bot
     BS->>BS: coop_battle_check_round_end (A9: reserves,<br/>10s floor, 5s settle) → $g_round_ended=1
     BS->>BS: coop_copy_parties_to_file_mp → dict_save<br/>(casualties, battle_result, xp_rand, player strengths)<br/>then $coop_battle_started = -1
@@ -53,7 +58,9 @@ sequenceDiagram
     BS->>CS: ENet IPC (7242) PKT_BATTLE_END + battle_end_signal_t{slot,...}
     CS->>CS: coop_on_ipc_packet: $g_coop_battle_ended_{slot} = 1<br/>(also set on IPC peer loss for an in-progress slot → abort path)
     C->>CS: rejoin campaign (manual/browser)
-    CS->>CS: multiplayer_campaign_player_joined: for EVERY slot with<br/>in_progress or ended set → coop_apply_battle_results<br/>(Phase 1, once per battle) + per-player Phase 2 XP from char dict;<br/>then re-announce still-open slots via ev 10 (chooser rebuild)
+    CS->>CS: multiplayer_campaign_player_joined: stamp hydration countdown,<br/>re-announce still-open (ended==0) slots via ev 10 (chooser rebuild)
+    C->>CS: ch49 identify (8) — or 5 s timeout fallback
+    CS->>CS: coop_player_hydrate: char load, then for EVERY slot with<br/>in_progress or ended set → coop_apply_battle_results<br/>(Phase 1, once per battle) + per-player Phase 2 XP from char dict
     CS->>C: ch125 encounter_resolved (9) — participants only —<br/>char/inv/party pushes; slot freed (+ ev 45 battle_slot_closed)
 ```
 
@@ -75,10 +82,10 @@ Line numbers verified @ `0b2500a`.
 | 10 | Deferred auto-connect trigger (game-loop context, not recv handler) | `module_simple_triggers.py` | 83–90 | `$g_coop_battle_connect_pending` → `multiplayer_connect_to_server` |
 | 11 | Battle server slot identity: `COOP_BATTLE_SLOT` env → `$coop_battle_slot` (raw-written each poll) | `src/coop_campaign.c` | 361–365 | `g_battle_slot` |
 | 12 | Battle server IPC: persistent connect + HELLO{slot} on connect | `src/coop_campaign.c` | 521 | `PKT_BATTLE_HELLO` (`src/shared/battle_ipc.h`) |
-| 13 | Battle server: join handler | `module_coop_mission_templates.py` | 424–467 | `ti_server_player_joined` |
-| 14 | — dict load on first join | `module_coop_mission_templates.py` | 434 | `script_coop_on_admin_panel_load` |
-| 15 | — campaign troop + char load | `module_coop_mission_templates.py` | 464 | `script_coop_load_character` |
-| 16 | One-life spawn gate | `module_coop_mission_templates.py` | 569–577 | `slot_player_spawned_this_round` |
+| 13 | Battle server: join handler (stamps the hydration window; char load deferred) | `module_coop_mission_templates.py` | 500 | `ti_server_player_joined` |
+| 14 | — dict load on first join | `module_coop_mission_templates.py` | 510 | `script_coop_on_admin_panel_load` |
+| 15 | — char load via hydration: ch126 identify (ev 54, lo16/hi16 acctid) or 5 s username fallback (spawn-gated, startMission-wipe recovery) | `module_coop_scripts.py` / `module_coop_mission_templates.py` | 1804–1823, 8866 / 65–86, 104–126 | ch126 identify arm → `coop_battle_player_hydrate`; `coop_battle_identify_send`, `coop_battle_hydrate_timeout` |
+| 16 | One-life spawn gate + hydration spawn gate (`slot_player_join_time == 0`) | `module_coop_mission_templates.py` | 569–577, 662 | `slot_player_spawned_this_round`, `slot_player_join_time` |
 | 17 | Bot reinforcement spawn | `module_coop_mission_templates.py` | ~662–773 | `script_coop_find_bot_troop_for_spawn` |
 | 18 | Agent spawn: formation + campaign equip | `module_coop_mission_templates.py` | 877 | `script_coop_spawn_formation`, `script_coop_equip_player_agent` |
 | 19 | Player damage quartered | `module_coop_mission_templates.py` | 160, 413 | `coop_server_reduce_damage` |
@@ -90,13 +97,13 @@ Line numbers verified @ `0b2500a`.
 | 25 | DLL: poll thread sees `$coop_battle_started == -1` | `src/coop_campaign.c` | 527–563 | `battle_poll_thread_func` |
 | 26 | DLL: collect + IPC END (slot-tagged) | `src/coop_campaign.c` | 461–496 | `battle_collect_and_save`, `battle_end_signal_t` (`src/shared/battle_ipc.h`) |
 | 27 | Campaign DLL: HELLO → peer/slot map + online mask; END → per-slot ended flag | `src/coop_campaign.c` | 666–688, 634–639 | `coop_on_ipc_packet` sets `$g_coop_battle_ended_<slot>`; `update_slots_online_mask`; peer loss for an in-progress slot also sets the ended flag |
-| 28 | Rejoin: apply pass loops ALL slots with in_progress or ended set | `module_coop_scripts.py` | 8661–8670 | `multiplayer_campaign_player_joined` (def `:8638`) |
-| 29 | Join-time ev-10 re-announce of still-open slots (chooser rebuild; runs AFTER the apply loop so consumed slots are never re-advertised; is_initiator=0) | `module_coop_scripts.py` | 8672–8703 | dict state in setup_sp..started + roster party present |
+| 28 | Rejoin: apply pass loops ALL slots with in_progress or ended set — runs at HYDRATION (ch49 identify ev 8 or 5 s countdown fallback), not at join | `module_coop_scripts.py` | 8919–8926 | `coop_player_hydrate` (def `:8891`); identify arm `:10546–10548`; fallback `module_simple_triggers.py:4526–4546` |
+| 29 | Join-time ev-10 re-announce of still-open slots (chooser rebuild; runs at join, BEFORE the hydrate-time apply loop — an `ended==0` filter keeps consumed/finished slots from being re-advertised; is_initiator=0) | `module_coop_scripts.py` | 9095–9125 | dict state in setup_sp..started + roster party present |
 | 30 | Results core (once per battle, gated on `end_mp`; participant-gated ev 9 via `@battle_player_{i}_name`) | `module_coop_scripts.py` | 11025, 11050 | `coop_apply_battle_results` |
 | 31 | — A7 victory consequences (gold/renown/prisoners/political) + Phase 1 XP pool (victory-gated, `:11135–11137`) | `module_coop_scripts.py` | 10840 | `coop_victory_consequences_dedicated`, `coop_compute_sp_xp_pool_from_dict` |
 | 32 | — ally casualties via casualty core; beaten-party release + marker clear | `module_coop_scripts.py` | 7314, 11339–11366 | `coop_apply_player_stack_casualty` (single owner of loss rules) |
 | 33 | — abort arm: ended without `end_mp` (battle server lost) → release parties, `abandoned`, slot freed, ev 45 broadcast + ev 44 param 1 to the joiner | `module_coop_scripts.py` | 11403–11447 | `coop_battle_broadcast_slot_closed` (def `:10453`) |
-| 34 | Phase 2 per-player pending XP on rejoin | `module_coop_scripts.py` | 8705+ | `coop_apply_xp_shares` |
+| 34 | Phase 2 per-player pending XP at hydration | `module_coop_scripts.py` | 8935+ | `coop_apply_xp_shares` (inside `coop_player_hydrate`) |
 | 35 | Campaign join trigger | `module_simple_triggers.py` | 4448 | `ti_server_player_joined` → `multiplayer_campaign_player_joined` |
 | 36 | Startup slot + marker sweep (post-load: all dicts → `none`, flags cleared, stale `slot_party_coop_battle_slot` markers swept — mid-battle autosave restart must not leave parties un-encounterable) | `module_simple_triggers.py` | 40–60 | startup block |
 | 37 | Third-party encounter bounce off marked parties (both encounter params tested) | `module_scripts.py` | 2979–2983 | `game_event_party_encounter` |
@@ -114,8 +121,10 @@ Line numbers verified @ `0b2500a`.
   (same for ally), `@num_bots_team_1/2`, `@cls{i}_name`; post-battle:
   `@p_enemy{i}_numstacks_cas` + per-stack cas keys (via
   `coop_battle_dict_put_stack_cas`), `@battle_result`, `@battle_xp_rand`,
-  `@battle_num_players`, `@battle_player_{i}_name/strength`.
-- **Char dicts:** `coop_char_<name>.wsedict` — Phase 1 stashes
+  `@battle_num_players`, `@battle_player_{i}_name/strength/acctid`.
+- **Char dicts:** `coop_char_sid_<acctid>.wsedict` (Steam-identified) /
+  `coop_char_<name>.wsedict` (acctid 0) — naming owned by the
+  `coop_char_store_dict_name[_raw]` key-builders. Phase 1 stashes
   `@char_battle_pending`, `@char_pending_party_xp`, `@char_pending_hero_xp`
   (preserved across concurrent saves by `coop_save_character:7073–7099`).
 - **Globals (per-slot campaign state):** `$g_coop_battle_in_progress_0..3`
@@ -171,15 +180,17 @@ Line numbers verified @ `0b2500a`.
   local-fight arm) must go through it.
 - Result application runs **once per battle**: gated on
   `@battle_state == end_mp` and the state is cleared before applying. The
-  rejoin apply pass loops **all** slots with in_progress or ended set
-  (`:8661–8670`) — never just one battle.
+  apply pass loops **all** slots with in_progress or ended set
+  (`:8919–8926`) — never just one battle — and runs at HYDRATION
+  (`coop_player_hydrate`: ch49 identify or the 5 s countdown fallback),
+  post-load, so casualties and spoils only ever touch a hydrated character.
 - ev 9 `encounter_resolved` is **participant-gated**: pushed only if the
   joining player's name appears in that battle's `@battle_player_{i}_name`
   list — non-participants never receive a resolve for someone else's battle.
-- The join-time ev-10 re-announce (`:8672–8703`) must run **after** the
-  apply loop, so consumed slots are never re-advertised; the chooser table
-  is client-side and dies with every connection, so only this push can
-  rebuild it on rejoin.
+- The join-time ev-10 re-announce (`:9095–9125`) runs at join, BEFORE the
+  hydrate-time apply loop; its `ended==0` filter keeps consumed/finished
+  slots from being re-advertised. The chooser table is client-side and dies
+  with every connection, so only this push can rebuild it on rejoin.
 - Enemy parties resolve via the dict `@p_enemy{i}_partyid`, never via
   `party_get_battle_opponent` — the rejoiner's party is REBUILT and has no
   engine battle association. The `slot_party_coop_battle_slot` marker is set
@@ -188,13 +199,17 @@ Line numbers verified @ `0b2500a`.
 - Slot allocation reads `$g_coop_battle_slots_online` — a slot is usable
   only if its battle server's IPC peer is connected AND it is not in
   progress; a pool miss must answer ch125 ev 44 param 0.
-- **Documented behavior:** result application is rejoin-triggered, so a
+- **Documented behavior:** result application is triggered by
+  rejoin-then-hydrate, so a
   finished battle whose participants never rejoin holds its slot
   (in_progress stays set) until the campaign server restarts — the startup
   sweep (anchor 36) then resets every slot and clears stale party markers.
 - Phase 1 (pool computation + stash) runs once per battle; Phase 2 (apply
-  pending XP from char dict) runs on every rejoin and clears the pending
-  flags before `coop_save_character` re-reads them from disk (`:8705+`).
+  pending XP from char dict) runs on every hydration and clears the pending
+  flags before `coop_save_character` re-reads them from disk (`:8935+`).
+  Phase 1 stashes for disconnected participants key their char dict via
+  `@battle_player_{i}_acctid` (captured at battle-write time) through
+  `coop_char_store_dict_name_raw` — participant *matching* stays name-based.
 - `coop_save_character` must preserve `@char_pending_*` keys it did not
   create — Phase 1 may stash for players who haven't rejoined.
 - `$coop_battle_started = -1` must be assigned only **after** `dict_save`
@@ -243,7 +258,7 @@ Line numbers verified @ `0b2500a`.
 Workbench documents (not part of the public export — see the citation
 note in `README.md`):
 
-- `docs/BATTLE_RESULTS_PIPELINE_AUDIT.md` — earlier results-pipeline audit.
-- `docs/superpowers/specs/2026-03-22-warband-coop-campaign-sync-design.md`
+- `docs/archive/BATTLE_RESULTS_PIPELINE_AUDIT.md` — earlier results-pipeline audit.
+- `docs/archive/2026-03-22-warband-coop-campaign-sync-design.md`
   — original campaign-sync design.
 - `patches/WarbandDedicated/kb.h` / `findings.md` — campaign-server binary RE.

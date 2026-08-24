@@ -31,7 +31,11 @@ the same PC is fine.
    *(Only on a first install. When you upgrade later, keep the `coop.ini`
    you already configured.)*
 
-Everyone does Step 1
+Everyone does Step 1.
+
+> Joining over Steam? That rename is the **only** `coop.ini` step you'll
+> ever do — you never edit the file unless the host set a password
+> (Step 4) or you're on LAN (Step 2B).
 
 ---
 
@@ -54,13 +58,14 @@ SteamHost=1
 ```
 
 That's it. While your game is running, your Steam friends will see a
-**Join Game** button next to your name.
+**Join Game** button next to your name, and you can right-click a friend
+→ **Invite to Game**.
 
 > ⚠️ By default **anyone** who can click that button can connect. Set a
 > password (Step 4) unless you're fine with that.
 
-**Players** — change nothing. You'll join by clicking your friend's
-Join Game button in Step 5.
+**Players** — change nothing in `coop.ini`. You'll join by clicking your
+friend's Join Game button (or accepting their invite) in Step 5.
 
 ### B. LAN / direct IP (**Skip if using Steam**)
 
@@ -108,10 +113,12 @@ Password=mypassword
 
 Max 47 characters. Restart the servers after changing it.
 
-**Players** — you need it in **two** places:
-1. Typed into the password box in the multiplayer browser when you join.
-2. Written into your own `coop.ini` (`Password=mypassword`), or battles
-   will reject you partway through the session.
+**Players** — put the same line in **your own** `coop.ini`
+(`Password=mypassword`). With it there, invite auto-join sends the
+password for you, and battle-server hops authenticate automatically.
+Without it, accepting an invite only lands you in the multiplayer
+browser — you can still type the password into the browser's password
+box to join, but battles will reject you partway through the session.
 
 ---
 
@@ -124,13 +131,20 @@ Joiners Launch **`mb_warband_wse2.exe`** — *not* `mb_warband.exe` — and pick
 
 1. Make sure Steam is running **before** you start the game.
 2. The Hosts game must be running too.
-3. Click **Join Game** on their Steam friends list entry.
-4. Wait ~5–10 seconds. A **COOP Direct** server appears in the
-   multiplayer browser's **LAN** tab — join it. (If the multiplayer browser was
-   already open, hit **Search**.)
+3. Click **Join Game** on their Steam friends list entry — or accept an
+   invite they sent you (right-click → **Invite to Game**).
+4. That's it. Within ~5–10 seconds the game navigates itself into the
+   multiplayer browser and **joins automatically** — no clicks needed.
+   (If you're mid-battle in singleplayer it waits until you leave the
+   mission. On a passworded server without `Password=` in your
+   `coop.ini`, it only opens the browser — join the **COOP Direct** row
+   yourself and type the password.)
 
-The button is one-directional: *you* click Join Game on *the host*. The
-host has no "invite" option to send you.
+Invites work in every direction: you can Join Game on the host *or on
+any friend already playing*, and both the host and joiners can
+right-click a friend → Invite to Game. (One Steam quirk: two people
+already in the same session lose the Join/Invite entries toward *each
+other* — they still show toward everyone else.)
 
 **If you're using LAN / direct IP (B):**
 
@@ -154,14 +168,21 @@ survive disconnects.
 
 ## Troubleshooting
 
+**My character reset after updating.** Characters made before this
+version were saved under your Windows/Steam profile name. Steam players
+now get a character tied to their actual Steam account instead, so the
+first time you join after updating, the game makes you a fresh
+character — your old one isn't deleted, it's just no longer the one
+that loads for you.
+
 | Problem | Fix |
 |---|---|
-| **Clicking Join Game does nothing** | Normal — there's no on-screen message. Your game and Steam must both already be running (the invite can't launch the game). With WSE2 its possible to be running game without steam in background so make sure its on. If you're already in a server, leave it first and click again. `warband_coop.log` in the game folder says exactly what happened |
+| **Clicking Join Game / accepting an invite does nothing** | Your game and Steam must both already be running (the invite can't launch the game). With WSE2 its possible to be running game without steam in background so make sure its on. If you're already in a server, leave it first and click again. If you're in a singleplayer battle, the auto-join waits until you leave the mission. `warband_coop.log` in the game folder says exactly what happened |
 | **No server in the list** | *Steam:* wait 10 s and press Search. *LAN:* wrong `HostIP`, or the host skipped the firewall step |
 | **"Unable to connect"** | A firewall **block** rule on the host — see below. Also check the host's server consoles are actually open |
 | **Battles kick you to the menu** | Your `HostIP` is still `127.0.0.1` (Step 2B) |
 | **Battles never start** | Host has no battle server running — use `coop_launch_all.bat` |
-| **Password rejected** | Retype it in the browser's password box, and make sure the same `Password=` line is in your own `coop.ini` |
+| **Password rejected / invite won't auto-join a passworded server** | Make sure the same `Password=` line is in your own `coop.ini`; joining manually, retype it in the browser's password box |
 | **Crash on launch** | You ran `mb_warband.exe`, or Steam updated Warband over the modded engine — re-extract the zip |
 | **"Invalid Quick String ID"** | Delete `Modules\NativeCoop` and re-extract the zip |
 | **B key does nothing** | No battle is open right now |
@@ -188,8 +209,9 @@ Disable-NetFirewallRule -DisplayName "<name>"
 ## A note on `coop.ini`
 
 Only three things in that file are meant for you: `HostIP`, `Password`,
-and the `[Steam]` section. **Leave `[NetTuning]` alone** — deleting it
-makes the connection worse.
+and the `[Steam]` section — and if you're a player joining over Steam
+on an unpassworded server, you never touch any of them. **Leave
+`[NetTuning]` alone** — deleting it makes the connection worse.
 
 Still stuck? Open an issue with your setup (LAN or Steam, how many
 players) and the host's `warband_coop_host.log` from the game folder.

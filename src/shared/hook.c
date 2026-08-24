@@ -4,8 +4,9 @@
 
 extern void coop_log(const char *fmt, ...);
 
-int hook_install(DWORD target_addr, void *detour_func, int bytes_to_copy,
-                 BYTE *saved_bytes, DWORD *trampoline_addr) {
+int hook_install_verified(DWORD target_addr, void *detour_func, int bytes_to_copy,
+                          const BYTE *expected_bytes, BYTE *saved_bytes,
+                          DWORD *trampoline_addr) {
     DWORD old_protect;
     BYTE *target = (BYTE *)target_addr;
     BYTE *tramp;
@@ -13,6 +14,17 @@ int hook_install(DWORD target_addr, void *detour_func, int bytes_to_copy,
     int i;
 
     if (bytes_to_copy < 5) return 0;
+
+    if (expected_bytes && memcmp((const BYTE *)target_addr, expected_bytes,
+                                 bytes_to_copy) != 0) {
+        const BYTE *t = (const BYTE *)target_addr;
+        coop_log("hook: VERIFY FAIL at 0x%08X -- bytes %02X %02X %02X %02X %02X, "
+                 "expected %02X %02X %02X %02X %02X -- hook NOT installed\n",
+                 target_addr, t[0], t[1], t[2], t[3], t[4],
+                 expected_bytes[0], expected_bytes[1], expected_bytes[2],
+                 expected_bytes[3], expected_bytes[4]);
+        return 0;
+    }
 
     memcpy(saved_bytes, target, bytes_to_copy);
 
@@ -50,6 +62,12 @@ int hook_install(DWORD target_addr, void *detour_func, int bytes_to_copy,
     VirtualProtect(target, bytes_to_copy, old_protect, &old_protect);
 
     return 1;
+}
+
+int hook_install(DWORD target_addr, void *detour_func, int bytes_to_copy,
+                 BYTE *saved_bytes, DWORD *trampoline_addr) {
+    return hook_install_verified(target_addr, detour_func, bytes_to_copy,
+                                 NULL, saved_bytes, trampoline_addr);
 }
 
 void hook_remove(DWORD target_addr, const BYTE *saved_bytes, int bytes_to_copy) {

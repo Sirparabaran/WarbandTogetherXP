@@ -93,6 +93,7 @@ static steam_cfg_t g_steam_cfg;
 /* Resolved at DLL load from variables.txt; index into g_basicGame.m_globalVariables int64 vector */
 static int  g_encountered_party_idx = -1;
 static int  g_asi_local_battle_idx  = -1;  /* $g_coop_asi_local_battle: set to 1 by module before local fight */
+static int  g_my_steam_acctid_idx   = -1;  /* $g_coop_my_steam_acctid: republished every 500ms by s59_writer_thread */
 
 static void read_config(HINSTANCE hinstDLL) {
     char dll_path[MAX_PATH], ini_path[MAX_PATH];
@@ -195,6 +196,15 @@ static DWORD WINAPI s59_writer_thread(LPVOID param) {
         write_string_register(59, g_host_ip);
         write_string_register(57, g_password);  /* mirror for module_simple_triggers.py's deferred battle connect */
         if (!written) { coop_log("s59=%s\n", g_host_ip); written = 1; }
+
+        /* Republish the Steam account id every tick: the engine wipes
+           module globals on every server connect, and a module-side
+           startup zero must never stick (project-state lesson). */
+        if (g_my_steam_acctid_idx >= 0) {
+            unsigned int acctid = steam_tunnel_local_acctid();
+            if (acctid != 0)
+                modglobals_set(g_my_steam_acctid_idx, (__int64)acctid);
+        }
 
         /* One-shot m_storedPassword prefill: covers the engine's own
            m_switchingModule direct-connect arm only -- a manual browser
@@ -448,6 +458,151 @@ __declspec(naked) void browser_framemove_detour(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Auto-join on invite landing -- CD3DApplication::FrameMove hook    */
+/*  Sole engine-memory writer for the auto-join flags; the tunnel      */
+/*  thread only sets the armed bit. RE ground truth: findings          */
+/*  "Auto-join on invite landing RE (2026-08-23)".                     */
+/* ------------------------------------------------------------------ */
+
+static BYTE  g_aj_saved[16];
+static DWORD g_aj_trampoline = 0;
+
+/* Generous by design: covers a player parked on a dead-zone screen the
+   engine can't navigate away from (a modal dialog, a live SP battle). */
+#define AUTOJOIN_TIMEOUT_MS 60000
+
+static void autojoin_clear_engine_flags(void) {
+    /* m_connectToServer must be cleared by us in BOTH exits: the initial
+       menu's native clear is our own 7-NOP "opcode 3415 fix", so a stale 1
+       bounces the player into the browser on every main-menu visit; and a
+       stale m_switchingModule auto-connects on their next manual browser
+       visit (row-0 mismatch never clears it). */
+    *(BYTE *)ADDR_SWITCHING_MODULE        = 0;
+    *(BYTE *)ADDR_SWITCHING_TO_CAMPAIGN   = 0;
+    *(BYTE *)ADDR_DIRECT_CONNECT_FLAG     = 0;
+}
+
+static void __cdecl autojoin_framemove_pre(void) {
+    static int   s_active = 0;   /* 0 idle, else the STEAM_AUTOJOIN_* kind */
+    static DWORD s_arm_tick = 0;
+    static int   s_navs = 0;
+
+    if (!s_active) {
+        int kind = steam_tunnel_autojoin_armed();
+        if (!kind) return;
+        if (kind == STEAM_AUTOJOIN_TUNNEL && !steam_tunnel_client_is_up()) {
+            steam_tunnel_autojoin_clear();   /* tunnel died between arm and fire */
+            return;
+        }
+        {
+            /* Replicate opcode 3415's stores (RE Q5). Address = the s59
+               thread's re-aimed host IP (loopback while the tunnel is up)
+               with the explicit port -- the type-4 direct search would
+               default a bare IP to rglConfig's iServerPort, which is
+               user-editable (RE round 2). Password = our own [Coop]
+               Password= (empty for open servers; the pw-without-local-
+               password case never arms -- verdict 0). m_switchingToCampaign
+               makes the starting/map/tactical native arms pick loading
+               mode 6, whose doStep writes m_gameType = 4 -- with any other
+               gameType the engine DROPS the campaign server's ping reply
+               and the row table stays empty. rglString::operator= is safe
+               here: this IS the render thread. */
+            typedef void (__fastcall *fn_rgl_copy)(void *ecx, void *edx, const char *s);
+            char host_addr[80];
+            _snprintf(host_addr, sizeof(host_addr), "%s:%d", g_host_ip, g_port);
+            host_addr[sizeof(host_addr) - 1] = '\0';
+            ((fn_rgl_copy)ADDR_RGL_STRING_COPY)((void *)ADDR_DIRECT_CONNECT_ADDR, NULL, host_addr);
+            ((fn_rgl_copy)ADDR_RGL_STRING_COPY)((void *)ADDR_DIRECT_CONNECT_PASS, NULL, g_password);
+            /* m_connectToServer is deliberately NOT set here: it is a pure
+               navigation trigger, and the same-frame window dispatch would
+               let the main menu's native arm consume it first -- that arm
+               hardcodes loading mode 4, whose frameMove writes m_gameType=1,
+               under which the engine drops the campaign server's ping reply
+               (runtime-proven). All menu-screen navigation is ours (mode 6);
+               the flag is set just-in-time for the WAIT_NATIVE contexts
+               below, whose map/tactical arms are the ones that need it. */
+            *(BYTE *)ADDR_SWITCHING_MODULE      = 1;
+            *(BYTE *)ADDR_SWITCHING_TO_CAMPAIGN = 1;
+            s_arm_tick = GetTickCount();
+            s_active = kind;
+            s_navs = 0;
+            coop_log("[autojoin] engine flags set -- address=%s (%s)\n", host_addr,
+                     kind == STEAM_AUTOJOIN_LOCAL ? "own server, LAN" : "tunnel");
+        }
+        return;
+    }
+
+    /* The engine clears m_switchingModule on connect and on every connect()
+       rejection -- either way the arm is spent. */
+    if (*(BYTE *)ADDR_SWITCHING_MODULE == 0) {
+        autojoin_clear_engine_flags();
+        steam_tunnel_autojoin_clear();
+        s_active = 0;
+        coop_log("[autojoin] consumed by engine -- flags cleared\n");
+        return;
+    }
+
+    if (GetTickCount() - s_arm_tick > AUTOJOIN_TIMEOUT_MS ||
+        (s_active == STEAM_AUTOJOIN_TUNNEL && !steam_tunnel_client_is_up())) {
+        autojoin_clear_engine_flags();
+        steam_tunnel_autojoin_clear();
+        s_active = 0;
+        coop_log("[autojoin] timed out or tunnel down -- flags cleared; COOP Direct row remains in the browser\n");
+        return;
+    }
+
+    /* Dead-zone screens: the flag-consuming windows self-navigate (SELF)
+       and a live mission / buried campaign map must not be yanked (WAIT) --
+       force navigation only from screens nothing else covers. Recipe lifted
+       from mbStartingWindow::frameMove (mode 6 skips the m_switchingModule
+       requirement in the loading window's MP arm). */
+    {
+        const int *begin = *(const int **)ADDR_OPEN_WINDOWS_BEGIN;
+        const int *end   = *(const int **)ADDR_OPEN_WINDOWS_END;
+        char *lw;
+        int action;
+        if (!begin || end <= begin) return;
+        action = steam_autojoin_window_action(begin, (int)(end - begin));
+        if (action == STEAM_AJ_WAIT_NATIVE) {
+            /* Map / live mission: the native arms own the transition (the
+               map joins the network thread; tactical waits for mission
+               end). Both pick loading mode 6 via m_switchingToCampaign.
+               Idempotent re-set; the consuming arm clears it. */
+            *(BYTE *)ADDR_DIRECT_CONNECT_FLAG = 1;
+            return;
+        }
+        if (action != STEAM_AJ_NAVIGATE) return;
+        lw = *(char **)ADDR_LOADING_WINDOW_PTR;
+        if (!lw) return;
+        /* No MP profile makes loading mode 6 fall through to the profiles
+           window, which we would re-navigate forever -- cap the loop and
+           leave the player where the engine put them. */
+        if (s_navs >= 5) {
+            autojoin_clear_engine_flags();
+            steam_tunnel_autojoin_clear();
+            s_active = 0;
+            coop_log("[autojoin] navigation not sticking (no MP profile?) -- flags cleared\n");
+            return;
+        }
+        s_navs++;
+        *(int *)(lw + LOADING_WINDOW_SOURCE_OFF) = 4;   /* back target: main menu */
+        *(int *)(lw + LOADING_WINDOW_MODE_OFF)   = 6;
+        *(int *)(lw + LOADING_WINDOW_STEP_OFF)   = 0;
+        ((void (__stdcall *)(int))ADDR_SET_WINDOW)(3);
+        coop_log("[autojoin] navigating to MP browser (loading mode 6, attempt %d)\n", s_navs);
+    }
+}
+
+__declspec(naked) void autojoin_framemove_detour(void) {
+    __asm {
+        push ecx
+        call autojoin_framemove_pre
+        pop  ecx
+        jmp  [g_aj_trampoline]
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /*  mbMission::createAgent detour — player attach on gameType=4       */
 /* ------------------------------------------------------------------ */
 
@@ -683,18 +838,6 @@ static BYTE  g_met_saved[16]  = {0};
 static int g_pending_result_idx = -1;
 static int g_pending_win_loss_idx = -1;
 
-/* Troop slot write — sets slot `slot_no` on troop `troop_idx` to `value`.
-   Troop slots are stored as a heap-allocated int array at troop+0x148.
-   troop_idx is the 0-based troop index. */
-static void write_troop_slot(int troop_idx, int slot_no, int value) {
-    DWORD troops_first = *(DWORD *)ADDR_TROOPS_VEC;
-    int *slots;
-    if (!troops_first) return;
-    slots = *(int **)((BYTE *)troops_first + troop_idx * TROOP_SIZE + TROOP_SLOTS_OFF);
-    if (!slots) return;
-    slots[slot_no] = value;
-}
-
 static int g_pending_xp_idx = -1;
 static int g_pending_cas_count_idx = -1;
 static int g_pending_cas_tid_idx[10]    = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
@@ -860,7 +1003,7 @@ BOOL APIENTRY DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
            (ASLR disabled via binary patch). Resolve all setParams-fixup +
            result-reporting IDs in one variables.txt pass. */
         {
-            enum { N_FIXED = 10, N_ALL = N_FIXED + 30 };
+            enum { N_FIXED = 11, N_ALL = N_FIXED + 30 };
             char vars_path[MAX_PATH];
             char cas_names[30][40];
             const char *names[N_ALL];
@@ -888,6 +1031,11 @@ BOOL APIENTRY DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
             names[n] = "g_coop_result_win_loss";       dest[n] = &g_result_win_loss_idx;   n++;
             names[n] = "g_coop_result_xp";             dest[n] = &g_result_xp_idx;         n++;
             names[n] = "g_coop_result_cas_count";      dest[n] = &g_result_cas_count_idx;  n++;
+            /* Assigned globals emit BARE names into variables.txt ($-prefixed
+               lines are the read-only emission form) -- runtime-proven: the
+               $-form logged "not found" while variables.txt carries the bare
+               name. */
+            names[n] = "g_coop_my_steam_acctid";       dest[n] = &g_my_steam_acctid_idx;   n++;
             for (ci = 0; ci < 10; ci++) {
                 _snprintf(cas_names[3*ci], sizeof(cas_names[0]),
                           "$g_coop_pending_cas_tid_%d", ci);
@@ -916,6 +1064,12 @@ BOOL APIENTRY DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         hook_install(ADDR_BROWSER_FRAMEMOVE, browser_framemove_detour,
                      BROWSER_PROLOGUE_SIZE, g_fm_saved, &g_fm_trampoline);
         coop_log("browser frameMove hooked at 0x%X\n", ADDR_BROWSER_FRAMEMOVE);
+
+        /* Auto-join on invite landing: per-frame arm/fire/cleanup driver.
+           Idles on a single armed-bit read for LAN/no-Steam sessions. */
+        hook_install(ADDR_FRAMEMOVE, autojoin_framemove_detour,
+                     FRAMEMOVE_PROLOGUE_SIZE, g_aj_saved, &g_aj_trampoline);
+        coop_log("app frameMove hooked at 0x%X (auto-join driver)\n", ADDR_FRAMEMOVE);
 
         /* Patch addExperienceToTroop to allow negative XP (Fix H).
            Engine clamps xp_amount < 0 to 0 at 0x4B84A9 (8 bytes:
