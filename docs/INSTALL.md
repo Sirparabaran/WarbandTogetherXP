@@ -27,9 +27,6 @@ the same PC is fine.
 1. Install Warband from Steam, launch it once, and quit.
 2. Steam → right-click Warband → Manage → **Browse local files**.
 3. Extract the release zip **directly into the Warband folder next to the game exe**.
-4. In that folder, rename **`coop.ini.example`** to **`coop.ini`**.
-   *(Only on a first install. When you upgrade later, keep the `coop.ini`
-   you already configured.)*
 
 Everyone does Step 1.
 
@@ -50,7 +47,7 @@ Do **A** or **B**, not both. Then continue to Step 3.
 
 ### A. Steam
 
-**Host** — open `coop.ini` and, in the `[Steam]` section, uncomment this
+**Host ONLY** — open `coop.ini.example` and reanme to `coop.ini` , then in the `[Steam]` section, uncomment this
 line (delete the leading `;`):
 
 ```ini
