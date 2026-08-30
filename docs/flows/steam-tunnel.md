@@ -56,8 +56,15 @@ JOINER game (engine mbnet)          HOST game client (bridge)      HOST dedicate
   client, setup failure, client retry exhaustion) publishes DOWN (LAN
   fallback live), runs SEH-guarded `steam_steamside_cleanup`, waits for
   Steam and rebuilds the role from scratch (backoff 5s -> 60s cap). If
-  the engine's one-shot boot init never ran, the thread calls
-  `SteamAPI_Init` itself after a 30 s grace (export ordinal 931).
+  the engine's one-shot boot init never ran, the thread self-inits after
+  a 30 s grace — but ONLY when `SteamAPI_IsSteamRunning()` reports Steam
+  up. This gate is load-bearing: a FAILED `SteamAPI_Init` leaks a ~32 MB
+  GameNetworkingSockets relay arena, so the pre-gate 250 ms blind retry
+  exhausted the 32-bit address space in ~25 s and raised
+  `EXCEPTION_OUT_OF_MEMORY` (fixed `09da2f7`, 2026-08-29; runtime-verified
+  VA-flat with Steam off). When a host/client role gives up finding Steam
+  past the grace it publishes `$g_coop_steam_missing`, and the module
+  shows the host a one-shot in-game warning (`mnu_coop_steam_warning`).
 
 ## Invites + server password (phase 4 `1ccc315`, phase 5 `5ccf502`)
 
@@ -184,6 +191,10 @@ the direct-connect arm.
   relay-network status lines, `[gns:]` channel.
 - **No module/protocol surface:** the tunnel is transparent to mbnet and
   to all ch49/125/126/127 traffic.
+- **Steam-missing warning:** a host/client role that can't find Steam
+  past the self-init grace publishes `$g_coop_steam_missing` (DLL-written,
+  republished by the s59 writer); the module pops `mnu_coop_steam_warning`
+  once on the campaign map — invites off, LAN join still works.
 
 ## Invariants
 
@@ -208,6 +219,7 @@ the direct-connect arm.
 | 2 | Identity equality needs `m_cbSize=8` | anchor 6 | GNS compares type+size+payload; wrong size = "wrong remote identity" + ICE abort 5003 (fixed pre-merge) | OK |
 | 3 | Loopback join passes engine auth | proxy re-aim to 127.0.0.1 | `isAuthExempt` @0x54C330 whitelists 127.0.0.1 + RFC1918 (`findings.md` "Loopback join classification"); 127.0.0.2/0.0.0.0 NOT exempt | OK |
 | 4 | ManualDispatch rejected | anchor 8 comment | Exclusive process-wide mode switch; engine already init'd normally | OK (documented decision) |
+| 5 | Self-init gated on `SteamAPI_IsSteamRunning` (no VA leak) | anchor 3 | A FAILED `SteamAPI_Init` leaks a ~32 MB GNS relay arena; pre-fix the 250 ms blind retry raised `EXCEPTION_OUT_OF_MEMORY` in ~25 s (live trace: `SteamAPI_Init` from `warband_coop.asi+0x58EE`, +32 MB/call, 12 calls = +385 MB). Gated on `IsSteamRunning()`; runtime-verified VA-flat with Steam off 2026-08-29 | OK |
 
 ## Open questions
 

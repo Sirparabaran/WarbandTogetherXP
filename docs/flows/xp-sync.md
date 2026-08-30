@@ -1,17 +1,24 @@
 # Flow: XP Sync (char XP, stack upgrades, battle XP)
 
 **Status:** AUDITED
-**Validated against commit:** `ce0e287` (steamid persistence,
-runtime-verified 2026-08-23: the rejoin-time full char push now fires
-from `coop_player_hydrate` (ch49 identify ev 8 / 5 s fallback), not the
-join handler, and char dicts are sid-keyed for Steam-identified players;
-the packed protocol itself is unchanged. Prior stamp `9681486`: packed char
-sync ch125 ev 36-40 replaces the per-value events this dossier used to
-cite — XP now travels in `packed_misc` (ev 40) rather than the old
-`char_sync_xp` (ev 21); runtime-verified via 2-client smoke, see
-project-state. Prior stamp `632466c`, A7 loot-gold note closed — applier
-merged `4ba5786`, runtime-verified 2026-07-24; A9 victory-gated XP pool
-noted)
+**Validated against commit:** `2dd4f17` (two rejoin XP-integrity fixes,
+both runtime-verified 2026-08-29/30: `f1cfc21` — the load-time party
+rebuild resolves the REAL party stack index by troop id before restoring
+stack-XP residuals/upgrade credits (the player's own stack survives
+`party_clear` at index 0, so the dict index is shifted +1; a recruit
+residual was landing on the player hero stack as free troop XP + engine
+level-ups on every rejoin). `2dd4f17` — the client ev-40/ev-43 xp
+delta-apply preserves the three point pools across `add_xp_to_troop`
+(the fresh-connect replay from local xp 0 crossed every past level
+threshold and re-minted level-up points, which ev-12 `sync_pools` then
+made server-authoritative — phantom +1/+1/+10 per relog). Prior stamp
+`ce0e287` (steamid persistence, runtime-verified 2026-08-23: rejoin-time
+full char push fires from `coop_player_hydrate`, char dicts sid-keyed;
+packed protocol unchanged). Prior stamp `9681486`: packed char sync
+ch125 ev 36-40 replaces the per-value events this dossier used to cite —
+XP travels in `packed_misc` (ev 40), not the old `char_sync_xp` (ev 21).
+Prior stamp `632466c`, A7 loot-gold note closed — applier merged
+`4ba5786`, runtime-verified 2026-07-24; A9 victory-gated XP pool noted)
 
 ## Scope
 
@@ -43,7 +50,7 @@ sequenceDiagram
     CS->>C: ch125 40 packed_misc: xp (31b raw), health (7b) + renown (16b<<7)
     CS->>C: ch125 43 hero_sync_xp per companion hero stack (troop, xp)<br/>-- unconditional every batch, not dirty-gated
     CS->>C: ch125 20 char_sync_done (arms diff-poller baseline)
-    note over C: ev40/ev43: apply SIGNED delta via add_xp_to_troop --<br/>undoes local engine kill-XP inflation, level derives from XP.<br/>ev43 targets the companion's client-local troop copy
+    note over C: ev40/ev43: apply delta via add_xp_to_troop with point<br/>pools preserved across the add (engine re-awards level-up points<br/>on every threshold crossed -- pool truth is ev 36/ev 12 only).<br/>Negative deltas are a NO-OP (engine clamps adds to >=0), so a<br/>client running AHEAD of the server is never corrected down.<br/>ev43 targets the companion's client-local troop copy
 
     note over CS,C: B) stack upgradeable push
     CS->>C: ch125 22 per stack: num_upgradeable

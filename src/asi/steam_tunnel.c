@@ -355,6 +355,7 @@ static int              g_invite_kind;     /* guarded by g_invite_cs */
 static unsigned __int64 g_invite_lobby;    /* guarded by g_invite_cs */
 static volatile LONG    g_invite_pw;      /* set at accept time; steam_tunnel_invite_pw() */
 static volatile unsigned int g_local_acctid;  /* low dword of own SteamID64; 0 = Steam not up. steam_tunnel_local_acctid() */
+static volatile int g_steam_missing;          /* 1 = host/client role waited out the grace and Steam still isn't running; published to $g_coop_steam_missing for the in-game warning. steam_tunnel_steam_missing() */
 static unsigned __int64 g_local_steamid64;    /* full own SteamID64 (tunnel thread only); 0 = Steam not up */
 /* Set at accept time alongside g_invite_pw; consumed at tunnel-UP. */
 static volatile LONG    g_invite_landed_pending;
@@ -748,10 +749,16 @@ static void steam_drain_invite(void) {
 
 int steam_tunnel_invite_pw(void) { return g_invite_pw != 0; }
 
-int  steam_tunnel_autojoin_armed(void) { return g_autojoin_armed != 0; }
+/* Returns the armed KIND (0 = idle) -- coop.c's driver keys the tunnel-up
+   check off it, so collapsing to a bool would subject LOCAL arms to the
+   TUNNEL liveness check (and kill them on hosts, whose client proxy is
+   never up). */
+int  steam_tunnel_autojoin_armed(void) { return g_autojoin_armed; }
 void steam_tunnel_autojoin_clear(void) { InterlockedExchange(&g_autojoin_armed, 0); }
+void steam_tunnel_autojoin_arm(int kind) { InterlockedExchange(&g_autojoin_armed, kind); }
 
 unsigned int steam_tunnel_local_acctid(void) { return g_local_acctid; }
+int steam_tunnel_steam_missing(void) { return g_steam_missing; }
 
 /* Blocks until Steam is usable for this process. Fresh start: the engine's
    boot-time SteamAPI_Init verdict (ADDR_STEAM_API_INIT) is authoritative;
@@ -771,22 +778,49 @@ unsigned int steam_tunnel_local_acctid(void) { return g_local_acctid; }
    timeout gives up and returns 0 so the caller can exit quietly. */
 static int steam_wait_steam_ready(int recovering, DWORD timeout_ms) {
     unsigned char (__cdecl *init_fn)(void) = NULL;
+    unsigned char (__cdecl *running_fn)(void) = NULL;
     DWORD start = GetTickCount(), last_log = 0;
     for (;;) {
         DWORD now = GetTickCount();
-        if (!recovering && *(volatile BYTE *)ADDR_STEAM_API_INIT == 1)
+        if (!recovering && *(volatile BYTE *)ADDR_STEAM_API_INIT == 1) {
+            g_steam_missing = 0;
             return 1;
-        if (!init_fn) {
-            HMODULE m = GetModuleHandleA("steam_api_wse2.dll");
-            if (m) init_fn = (unsigned char (__cdecl *)(void))
-                                 GetProcAddress(m, "SteamAPI_Init");
         }
-        if (init_fn && (recovering || now - start > STEAM_SELF_INIT_GRACE_MS) &&
+        if (!init_fn || !running_fn) {
+            HMODULE m = GetModuleHandleA("steam_api_wse2.dll");
+            if (m) {
+                if (!init_fn)
+                    init_fn = (unsigned char (__cdecl *)(void))
+                                  GetProcAddress(m, "SteamAPI_Init");
+                if (!running_fn)
+                    running_fn = (unsigned char (__cdecl *)(void))
+                                     GetProcAddress(m, "SteamAPI_IsSteamRunning");
+            }
+        }
+        /* Self-init escalation (game launched before Steam, or Steam died
+           mid-session). SteamAPI_Init leaks a ~32 MB GameNetworkingSockets
+           relay arena on every FAILED call -- a 250 ms retry against a dead
+           Steam pipe exhausts the 32-bit address space in ~25 s and raises
+           EXCEPTION_OUT_OF_MEMORY. Gate init on SteamAPI_IsSteamRunning(),
+           a cheap allocation-free probe, so we only pay for init when it can
+           actually connect. If the probe export is somehow absent we skip
+           self-init entirely rather than risk the leak; the engine boot-init
+           flag above remains the primary ready path. */
+        if (init_fn && running_fn && running_fn() &&
+            (recovering || now - start > STEAM_SELF_INIT_GRACE_MS) &&
             init_fn()) {
             coop_log("[steam] SteamAPI_Init succeeded on the tunnel thread%s\n",
                      recovering ? " (recovery)" : " (engine boot-init never flagged)");
+            g_steam_missing = 0;
             return 1;
         }
+        /* A configured role needs Steam; once the grace has elapsed and the
+           probe still says Steam is down, publish the miss so the module can
+           warn the host in-game. Role OFF (pure LAN + invite standby) never
+           warns -- Steam is optional there. */
+        if (g_tun.cfg.role != STEAM_ROLE_OFF && running_fn && !running_fn() &&
+            now - start > STEAM_SELF_INIT_GRACE_MS)
+            g_steam_missing = 1;
         if (timeout_ms != 0 && now - start > timeout_ms) {
             coop_log("[steam] Steam not ready after %us -- invite standby off (LAN unaffected)\n",
                      timeout_ms / 1000);

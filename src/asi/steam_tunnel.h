@@ -135,10 +135,18 @@ int steam_tunnel_invite_pw(void);
 #define STEAM_AUTOJOIN_LOCAL  2
 int  steam_tunnel_autojoin_armed(void);
 void steam_tunnel_autojoin_clear(void);
+/* External arm (post-battle campaign return hop in coop.c). */
+void steam_tunnel_autojoin_arm(int kind);
 
 /* Low dword of the local SteamID64, published by the tunnel thread as soon
    as Steam is usable -- for every role, including OFF standby. 0 if Steam
    is unavailable or not yet up. */
 unsigned int steam_tunnel_local_acctid(void);
+
+/* 1 once a Steam-needing role (host/client) has waited out the self-init
+   grace and Steam still isn't running; 0 while Steam is up or the role is
+   OFF. coop.c republishes this to $g_coop_steam_missing so the module can
+   show the host an in-game "Steam not running" warning. */
+int steam_tunnel_steam_missing(void);
 
 #endif /* STEAM_TUNNEL_H */

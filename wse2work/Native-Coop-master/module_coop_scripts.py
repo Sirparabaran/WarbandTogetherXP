@@ -1796,6 +1796,9 @@ coop_scripts = [
             (try_for_range, ":rt_player", 1, ":rt_num_players"),
               (player_is_active, ":rt_player"),
               (multiplayer_send_int_to_player, ":rt_player", multiplayer_event_coop_send_to_player, coop_event_battle_retreat),
+              # Retreat sets $g_round_ended directly (check_round_end never
+              # fires), so the return-to-campaign push happens here too.
+              (multiplayer_send_int_to_player, ":rt_player", multiplayer_event_coop_send_to_player, coop_event_return_to_campaign),
             (try_end),
             (store_mission_timer_a, "$g_round_finish_time"),
             (assign, "$g_round_ended", 1),
@@ -1803,13 +1806,19 @@ coop_scripts = [
         (else_try),
           (eq, ":event_subtype", coop_event_identify),
           # Battle-side identify: client self-reports its Steam acctid
-          # (lo16/hi16) so character load keys by acctid. Hydration and the
-          # spawn-gate clear happen in coop_battle_player_hydrate. Gated on
+          # (lo16/hi16) so character load keys by acctid. The handler only
+          # RECORDS acctid+1 into the wipe-proof troop-slot mirror; all
+          # hydration runs from coop_battle_hydrate_timeout, which fires
+          # once the player's troop is assigned. Identify can arrive before
+          # the join trigger (troop still -1) and the engine's startMission
+          # wipes every player slot on each scene restart -- both destroyed
+          # a direct hydrate's keying, and the client's one-send-per-
+          # connection latch means the event can never re-arrive. Gated on
           # the active mission's game type being one of the two coop battle
           # types (same idiom as coop_event_start_map/open_admin_panel above)
-          # so a mischanneled/forged ch126 ev-54 can't run battle hydration
-          # on the campaign server, which runs no battle mission template and
-          # never sets $g_multiplayer_game_type to either coop battle value.
+          # so a mischanneled/forged ch126 ev-54 can't touch the campaign
+          # server, which never sets $g_multiplayer_game_type to either
+          # coop battle value.
           (this_or_next|eq, "$g_multiplayer_game_type", multiplayer_game_type_coop_battle),
           (eq, "$g_multiplayer_game_type", multiplayer_game_type_coop_siege),
           (store_script_param, ":acct_lo", 4),
@@ -1820,7 +1829,9 @@ coop_scripts = [
           (val_min, ":acct_hi", 0xFFFF),
           (store_mul, ":acctid", ":acct_hi", 0x10000),
           (val_add, ":acctid", ":acct_lo"),
-          (call_script, "script_coop_battle_player_hydrate", ":player_no", ":acctid"),
+          (store_add, ":ident_troop", multiplayer_campaign_player_troops_begin, ":player_no"),
+          (store_add, ":ident_val", ":acctid", 1),
+          (troop_set_slot, ":ident_troop", slot_troop_coop_battle_ident, ":ident_val"),
         (else_try),
           (eq, ":event_subtype", coop_event_open_admin_panel),
           (try_begin),
@@ -2437,6 +2448,15 @@ coop_scripts = [
       (else_try),
         (eq, ":event_subtype", coop_event_battle_retreat),
         (display_message, "@The initiator has sounded the retreat -- returning to the campaign.", 0xFFFFAA44),
+      (else_try),
+        (eq, ":event_subtype", coop_event_return_to_campaign),
+        # Battle over: the ASI's 500 ms modglobals thread reads this global
+        # and arms the auto-join driver at the campaign server's address.
+        # It survives until the next connect (the engine wipes client
+        # globals then) -- which is the reconnect it triggers. Harmless
+        # without the ASI: nothing reads it.
+        (assign, "$g_coop_return_to_campaign", 1),
+        (display_message, "@Battle over -- reconnecting to the campaign server...", 0xFF88FF88),
       (else_try),
         (eq, ":event_subtype", coop_event_return_is_initiator),
         (store_script_param, ":value", 4),
@@ -4761,6 +4781,22 @@ coop_scripts = [
       (call_script, "script_show_multiplayer_message", multiplayer_message_type_round_result_in_battle_mode, "$coop_winner_team"),
       (store_mission_timer_a, "$g_round_finish_time"),
       (assign, "$g_round_ended", 1),
+
+      # Battle over -- tell every client to auto-reconnect to the campaign
+      # server (ch127 ev 55; the ASI arms its auto-join driver off the
+      # module global the client handler sets). Sent here rather than next
+      # to kick_player so the event has the kick handler's ~10 s delay to
+      # deliver. Dedicated-only: the listen-server path finishes the
+      # mission locally.
+      (try_begin),
+        (multiplayer_is_server),
+        (multiplayer_is_dedicated_server),
+        (get_max_players, ":rtc_num_players"),
+        (try_for_range, ":rtc_player", 1, ":rtc_num_players"),
+          (player_is_active, ":rtc_player"),
+          (multiplayer_send_int_to_player, ":rtc_player", multiplayer_event_coop_send_to_player, coop_event_return_to_campaign),
+        (try_end),
+      (try_end),
     (try_end),
    ]),
 
@@ -4881,7 +4917,15 @@ coop_scripts = [
           (str_store_player_username, s1, ":player_no"),
           (dict_set_str, "$coop_dict", "@battle_player_{reg20}_name", s1),
 
-          (player_get_slot, ":pt_acctid", ":player_no", slot_player_coop_steam_acctid),
+          # Key rewards by the identify MIRROR, not player slot 67: the
+          # campaign server's Phase-1 stash uses this acctid to pick the
+          # char dict, and the player slot is zeroed by every startMission
+          # wipe -- a 0 here strands the rewards in a username-keyed dict
+          # the sid-keyed campaign hydrate never reads.
+          (store_add, ":ident_troop", multiplayer_campaign_player_troops_begin, ":player_no"),
+          (troop_get_slot, ":pt_acctid", ":ident_troop", slot_troop_coop_battle_ident),
+          (val_max, ":pt_acctid", 1),
+          (val_sub, ":pt_acctid", 1),
           (dict_set_int, "$coop_dict", "@battle_player_{reg20}_acctid", ":pt_acctid"),
 
           (player_get_agent_id, ":agent_no", ":player_no"),
@@ -4895,9 +4939,29 @@ coop_scripts = [
           (store_mul, ":pstrength", ":plevel", 10),
           (dict_set_int, "$coop_dict", "@battle_player_{reg20}_strength", ":pstrength"),
 
+          # Personal kill XP earned this mission: the engine credits
+          # per-kill XP into the killer's troop (writer 0x487A90, no
+          # game-type gate) -- the delta over the hydrate-time baseline.
+          # Phase 1 credits it as a hero share, outcome-independent
+          # (native SP pays kill XP on top of the end-of-battle pool,
+          # win or lose).
+          (assign, ":kill_xp", 0),
+          (store_add, ":kx_troop", multiplayer_campaign_player_troops_begin, ":player_no"),
+          (troop_get_slot, ":kx_base", ":kx_troop", slot_troop_coop_battle_xp_base),
+          (try_begin),
+              (gt, ":kx_base", 0),
+              (val_sub, ":kx_base", 1),
+              (troop_get_xp, ":kx_now", ":kx_troop"),
+              (store_sub, ":kill_xp", ":kx_now", ":kx_base"),
+              (val_max, ":kill_xp", 0),
+              (val_min, ":kill_xp", 40000),
+          (try_end),
+          (dict_set_int, "$coop_dict", "@battle_player_{reg20}_kill_xp", ":kill_xp"),
+
           (assign, reg1, reg20),
           (assign, reg2, ":pstrength"),
-          (display_message, "@[BATTLE SAVE] player{reg1} name={s1} strength={reg2}"),
+          (assign, reg3, ":kill_xp"),
+          (display_message, "@[BATTLE SAVE] player{reg1} name={s1} strength={reg2} kill_xp={reg3}"),
 
           (val_add, reg20, 1),
       (try_end),
@@ -7237,13 +7301,23 @@ coop_scripts = [
         (store_script_param, ":int2", 3),
         (multiplayer_get_my_player, ":my_player"),
         (player_get_troop_id, ":troop_no", ":my_player"),
-        # XP: signed-delta apply (same rationale as the old ev 21 arm --
-        # add_xp_to_troop takes negative deltas; level derives from XP)
+        # XP: signed-delta apply (same rationale as the old ev 21 arm).
+        # Pools are preserved across the add: the engine auto-awards
+        # level-up points on every threshold the add crosses, and a
+        # fresh-connect replay (local xp 0 -> server xp) crosses every
+        # past threshold -- re-minting points the server already paid.
+        # Server pool truth arrives via ev 36; the local award must die.
         (troop_get_xp, ":cur_xp", ":troop_no"),
         (store_sub, ":delta_xp", ":int1", ":cur_xp"),
         (try_begin),
             (neq, ":delta_xp", 0),
+            (troop_get_attribute_points, ":keep_ap", ":troop_no"),
+            (troop_get_skill_points, ":keep_sp", ":troop_no"),
+            (troop_get_proficiency_points, ":keep_pp", ":troop_no"),
             (add_xp_to_troop, ":delta_xp", ":troop_no"),
+            (troop_set_attribute_points, ":troop_no", ":keep_ap"),
+            (troop_set_skill_points, ":troop_no", ":keep_sp"),
+            (troop_set_proficiency_points, ":troop_no", ":keep_pp"),
         (try_end),
         # health
         (store_and, ":health", ":int2", 0x7F),
@@ -7258,15 +7332,22 @@ coop_scripts = [
         (eq, ":event_type", multiplayer_event_multiplayer_campaign_server_event_hero_sync_xp),  # 43
         (store_script_param, ":hero_troop", 2),
         (store_script_param, ":xp", 3),
-        # Companion troop XP: same signed-delta apply as ev 40. Level is
-        # derived from XP by the engine, so the sheet corrects fully.
+        # Companion troop XP: same signed-delta apply as ev 40, with the
+        # same pool preservation -- the fresh-connect replay would mint
+        # phantom companion level-up points on every rejoin.
         (troop_is_hero, ":hero_troop"),
         (neg|is_between, ":hero_troop", multiplayer_campaign_player_troops_begin, multiplayer_campaign_player_troops_end),
         (troop_get_xp, ":cur_xp", ":hero_troop"),
         (store_sub, ":delta_xp", ":xp", ":cur_xp"),
         (try_begin),
             (neq, ":delta_xp", 0),
+            (troop_get_attribute_points, ":keep_ap", ":hero_troop"),
+            (troop_get_skill_points, ":keep_sp", ":hero_troop"),
+            (troop_get_proficiency_points, ":keep_pp", ":hero_troop"),
             (add_xp_to_troop, ":delta_xp", ":hero_troop"),
+            (troop_set_attribute_points, ":hero_troop", ":keep_ap"),
+            (troop_set_skill_points, ":hero_troop", ":keep_sp"),
+            (troop_set_proficiency_points, ":hero_troop", ":keep_pp"),
         (try_end),
       (else_try),
         (eq, ":event_type", multiplayer_event_multiplayer_campaign_server_event_char_sync_done),  # 20
@@ -7669,6 +7750,16 @@ coop_scripts = [
            (assign, ":xp", "$g_coop_set_xp_value"),
            (display_message, "@[CHAR SAVE] using DLL set_xp target instead of troop_get_xp"),
        (try_end),
+       # Battle-server saves (baseline slot set only there) cap XP at the
+       # hydrate-time baseline: in-mission kill XP is paid exclusively by
+       # the Phase-1 @battle_player_{i}_kill_xp credit -- persisting it
+       # here too would pay it twice.
+       (try_begin),
+           (troop_get_slot, ":kx_base", ":troop_no", slot_troop_coop_battle_xp_base),
+           (gt, ":kx_base", 0),
+           (val_sub, ":kx_base", 1),
+           (val_min, ":xp", ":kx_base"),
+       (try_end),
        (assign, reg1, ":level"),
        (assign, reg2, ":xp"),
        (assign, reg3, ":player_no"),
@@ -7778,21 +7869,32 @@ coop_scripts = [
                (party_stack_get_size, ":stack_size", ":party_no", ":i"),
                (party_stack_get_num_wounded, ":stack_wounded", ":party_no", ":i"),
                # Stack XP drives troop upgrades -- meaningless for heroes
-               # (hero XP lives on the troop itself).
+               # (hero XP lives on the troop itself). The engine keeps two
+               # per-stack values: the sub-threshold XP residual (op 3900)
+               # and the minted upgrade-credit counter (op 3901). Both must
+               # be saved -- the rejoin rebuild (party_clear + re-add)
+               # zeroes them, and credits already minted are no longer in
+               # the XP residual (engine RE: mbParty::addExperienceToStack
+               # moves crossed XP into num_upgradeable and zeroes the
+               # residual once a stack is fully upgradeable).
                (assign, ":stack_xp", 0),
+               (assign, ":stack_upg", 0),
                (try_begin),
                    (neg|troop_is_hero, ":stack_troop"),
                    (party_stack_get_experience, ":stack_xp", ":party_no", ":i"),
+                   (party_stack_get_num_upgradeable, ":stack_upg", ":party_no", ":i"),
                (try_end),
                (assign, reg0, ":save_idx"),
                (str_store_string, s12, "@char_party_troop_{reg0}"),
                (str_store_string, s13, "@char_party_count_{reg0}"),
                (str_store_string, s14, "@char_party_wound_{reg0}"),
                (str_store_string, s15, "@char_party_xp_{reg0}"),
+               (str_store_string, s16, "@char_party_upg_{reg0}"),
                (dict_set_int, "$coop_char_dict", s12, ":stack_troop"),
                (dict_set_int, "$coop_char_dict", s13, ":stack_size"),
                (dict_set_int, "$coop_char_dict", s14, ":stack_wounded"),
                (dict_set_int, "$coop_char_dict", s15, ":stack_xp"),
+               (dict_set_int, "$coop_char_dict", s16, ":stack_upg"),
                (val_add, ":save_idx", 1),
            (try_end),
            (dict_set_int, "$coop_char_dict", "@char_party_stacks", ":save_idx"),
@@ -8067,6 +8169,7 @@ coop_scripts = [
                    (str_store_string, s13, "@char_party_count_{reg0}"),
                    (str_store_string, s14, "@char_party_wound_{reg0}"),
                    (str_store_string, s15, "@char_party_xp_{reg0}"),
+                   (str_store_string, s16, "@char_party_upg_{reg0}"),
                    (dict_get_int, ":stack_troop", "$coop_char_dict", s12),
                    (dict_get_int, ":stack_size", "$coop_char_dict", s13),
                    (dict_get_int, ":stack_wounded", "$coop_char_dict", s14),
@@ -8075,15 +8178,47 @@ coop_scripts = [
                        (dict_has_key, "$coop_char_dict", s15),
                        (dict_get_int, ":stack_xp", "$coop_char_dict", s15),
                    (try_end),
+                   (assign, ":stack_upg", 0),
+                   (try_begin),
+                       (dict_has_key, "$coop_char_dict", s16),
+                       (dict_get_int, ":stack_upg", "$coop_char_dict", s16),
+                   (try_end),
                    (gt, ":stack_size", 0),
                    (party_add_members, ":party_no", ":stack_troop", ":stack_size"),
                    (try_begin),
                        (gt, ":stack_wounded", 0),
                        (party_wound_members, ":party_no", ":stack_troop", ":stack_wounded"),
                    (try_end),
+                   # The dict index is NOT a party stack index: the player's
+                   # own stack survives party_clear, so every re-added stack
+                   # sits one slot higher than its dict position. Resolve the
+                   # real index by troop id -- an index-addressed restore at
+                   # ":i" lands on the previous stack (dict slot 0 hits the
+                   # player hero, whose stack XP pays out as free troop XP).
+                   (assign, ":party_idx", -1),
+                   (party_get_num_companion_stacks, ":live_stacks", ":party_no"),
+                   (try_for_range, ":j", 0, ":live_stacks"),
+                       (party_stack_get_troop_id, ":j_troop", ":party_no", ":j"),
+                       (eq, ":j_troop", ":stack_troop"),
+                       (assign, ":party_idx", ":j"),
+                       (assign, ":j", ":live_stacks"),
+                   (try_end),
+                   (ge, ":party_idx", 0),
                    (try_begin),
                        (gt, ":stack_xp", 0),
-                       (party_add_xp_to_stack, ":party_no", ":i", ":stack_xp"),
+                       # Hero stack XP routes into the hero's troop XP --
+                       # never restore a residual onto one.
+                       (neg|troop_is_hero, ":stack_troop"),
+                       (party_add_xp_to_stack, ":party_no", ":party_idx", ":stack_xp"),
+                   (try_end),
+                   # Restore minted credits AFTER the XP re-add: the saved
+                   # residual is sub-threshold, so the re-add mints nothing
+                   # and the raw op-3906 write cannot clobber fresh credits.
+                   # Clamp module-side -- 3906 is unclamped.
+                   (try_begin),
+                       (gt, ":stack_upg", 0),
+                       (val_min, ":stack_upg", ":stack_size"),
+                       (party_stack_set_num_upgradeable, ":party_no", ":party_idx", ":stack_upg"),
                    (try_end),
                (try_end),
            (try_end),
@@ -8860,14 +8995,18 @@ coop_scripts = [
   # Battle-server twin of coop_player_hydrate: records the acctid, loads
   # the char dict (coop_load_character keys via the acctid slot), and sets
   # the issue-#15 hydration state. No creation path on battle servers -- a
-  # failed load leaves state 0 so the save gates hold. Always clears the
-  # spawn gate (slot_player_join_time) so a failed load still lets the
-  # player spawn and the 5 s timeout can never refire.
+  # failed load sets state nodict, which holds the save gates (!= ready)
+  # and stops the hydrate poll from re-running the load (its starter-party
+  # branch is not idempotent). Always clears the spawn gate
+  # (slot_player_join_time) so a failed load still lets the player spawn.
+  # Sole caller: the coop_battle_hydrate_timeout poll, which guarantees
+  # the player troop is assigned before hydrating.
   ("coop_battle_player_hydrate",
    [
        (store_script_param, ":player_no", 1),
        (store_script_param, ":acctid", 2),
-       # Idempotence: timeout racing identify must never re-key/re-load.
+       # Idempotence: a wipe zeroes char_state, re-opening this gate -- the
+       # poll then re-hydrates from the mirror with the same key.
        (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
        (eq, ":char_state", 0),
        (player_set_slot, ":player_no", slot_player_join_time, 0),
@@ -8877,8 +9016,21 @@ coop_scripts = [
            (eq, reg0, 1),
            (player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_ready),
        (else_try),
-           (player_set_slot, ":player_no", slot_player_coop_char_state, 0),
+           (player_set_slot, ":player_no", slot_player_coop_char_state, coop_char_state_nodict),
        (try_end),
+       # Kill-XP baseline: post-load troop XP (+1, 0 = unset). If the load
+       # queued a DLL set_xp (negative delta), troop_get_xp is stale until
+       # coop_post_frame -- use the DLL target instead (same rule as
+       # coop_save_character).
+       (store_add, ":kx_troop", multiplayer_campaign_player_troops_begin, ":player_no"),
+       (troop_get_xp, ":kx_base", ":kx_troop"),
+       (try_begin),
+           (eq, "$g_coop_set_xp_go", 1),
+           (eq, "$g_coop_set_xp_troop", ":kx_troop"),
+           (assign, ":kx_base", "$g_coop_set_xp_value"),
+       (try_end),
+       (val_add, ":kx_base", 1),
+       (troop_set_slot, ":kx_troop", slot_troop_coop_battle_xp_base, ":kx_base"),
    ]),
 
   # coop_player_hydrate
@@ -9775,23 +9927,36 @@ coop_scripts = [
                 (player_get_slot, ":dirty", ":player_no", slot_player_coop_char_dirty),
                 (val_or, ":dirty", coop_char_dirty_gold),
                 (player_set_slot, ":player_no", slot_player_coop_char_dirty, ":dirty"),
-                (party_remove_members, ":party_no", ":from_troop", ":upg_count"),
-                (party_add_members, ":party_no", ":to_troop", ":upg_count"),
-                # Native upgrades consume the from-stack's per-stack
-                # num_upgradeable credit counter -- there is no stack XP to
-                # debit (engine: stack+0x14; party_remove_members only clamps
-                # it to the survivor count). Mirror the client engine's
-                # consumption or the next ev-22 push resurrects spent
-                # upgrades. Floor at 0; if the whole stack upgraded away the
-                # loop simply finds no from-stack.
+                # Native upgrades consume the from-stack's num_upgradeable
+                # credit counter (engine: stack+0x14; no stack XP is
+                # debited). Capture the credit BEFORE party_remove_members:
+                # the engine clamps +0x14 to the survivor count on removal,
+                # so a post-removal read double-consumes on partial upgrades
+                # (10 troops / 10 credits, upgrade 5: clamp leaves 5, minus
+                # 5 = 0 -- native leaves 5). Subtract first, clamp after.
+                (assign, ":upg_pre", 0),
                 (party_get_num_companion_stacks, ":num_stacks", ":party_no"),
                 (try_for_range, ":stack_i", 0, ":num_stacks"),
                     (party_stack_get_troop_id, ":stack_trp", ":party_no", ":stack_i"),
                     (eq, ":stack_trp", ":from_troop"),
-                    (party_stack_get_num_upgradeable, ":upg_left", ":party_no", ":stack_i"),
-                    (val_sub, ":upg_left", ":upg_count"),
-                    (val_max, ":upg_left", 0),
-                    (party_stack_set_num_upgradeable, ":party_no", ":stack_i", ":upg_left"),
+                    (party_stack_get_num_upgradeable, ":upg_pre", ":party_no", ":stack_i"),
+                (try_end),
+                (party_remove_members, ":party_no", ":from_troop", ":upg_count"),
+                (party_add_members, ":party_no", ":to_troop", ":upg_count"),
+                # Mirror the client engine's consumption or the next ev-22
+                # push resurrects spent upgrades. Floor at 0, clamp to the
+                # surviving stack size (op 3906 is unclamped); if the whole
+                # stack upgraded away the loop finds no from-stack.
+                (store_sub, ":upg_left", ":upg_pre", ":upg_count"),
+                (val_max, ":upg_left", 0),
+                (party_get_num_companion_stacks, ":num_stacks", ":party_no"),
+                (try_for_range, ":stack_i", 0, ":num_stacks"),
+                    (party_stack_get_troop_id, ":stack_trp", ":party_no", ":stack_i"),
+                    (eq, ":stack_trp", ":from_troop"),
+                    (party_stack_get_size, ":stack_left", ":party_no", ":stack_i"),
+                    (assign, ":upg_set", ":upg_left"),
+                    (val_min, ":upg_set", ":stack_left"),
+                    (party_stack_set_num_upgradeable, ":party_no", ":stack_i", ":upg_set"),
                 (try_end),
                 # Event-driven refresh so the client sees consumed credits
                 # without waiting for the next party-screen open.
@@ -10247,6 +10412,9 @@ coop_scripts = [
                 # Re-push char sync: the join-time push predates this event,
                 # so the client's player/companion XP is stale until now.
                 (call_script, "script_coop_send_char_sync_to_client", ":player_no"),
+                # Same staleness for stack upgrade credits: the party_add_xp
+                # above just minted them, after the hydrate-time ev-22 push.
+                (call_script, "script_coop_send_party_upgradeable_to_client", ":player_no"),
                 # Notify client encounter is resolved
                 (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
                     multiplayer_event_multiplayer_campaign_server_event_encounter_resolved, 0),
@@ -10490,6 +10658,12 @@ coop_scripts = [
             (store_script_param, ":p4", 4),
             (store_script_param, ":p5", 5),
             (call_script, "script_coop_char_server_receive", ":player_no", ":event_type", ":p3", ":p4", ":p5"),
+        (else_try),
+            (eq, ":event_type", multiplayer_event_multiplayer_campaign_request_party_upgradeable),  # 9
+            # Client pull once its replicated party is visible -- the
+            # hydrate-time ev-22 push races roster replication (the client
+            # handler drops stacks it doesn't have yet).
+            (call_script, "script_coop_send_party_upgradeable_to_client", ":player_no"),
         (else_try),
             (eq, ":event_type", multiplayer_event_multiplayer_campaign_request_char_sync),  # 7
             (player_get_slot, ":dirty", ":player_no", slot_player_coop_char_dirty),
@@ -11602,6 +11776,44 @@ coop_scripts = [
 				(display_message, "@[BATTLE RESULTS] Phase1: pool skipped -- non-victory result (native parity)"),
 		(else_try),
 			(display_message, "@[BATTLE RESULTS] Phase1: skipped -- missing @battle_num_players or host_party or xp_rand key"),
+		(try_end),
+
+		# --- Kill-XP credit (outcome-independent) ---
+		# Native SP pays per-kill XP during the fight on top of the
+		# end-of-battle pool, win or lose. The battle server snapshots each
+		# player's in-mission kill-XP delta (@battle_player_{i}_kill_xp);
+		# add it to the pending hero share -- ADDITIVE on top of whatever
+		# the victory stash above wrote, applied by Phase 2's hero arm.
+		(try_begin),
+			(dict_has_key, "$coop_dict", "@battle_num_players"),
+			(dict_get_int, ":kx_num_bp", "$coop_dict", "@battle_num_players"),
+			(try_for_range, reg20, 0, ":kx_num_bp"),
+				(dict_has_key, "$coop_dict", "@battle_player_{reg20}_kill_xp"),
+				(dict_get_int, ":kxp", "$coop_dict", "@battle_player_{reg20}_kill_xp"),
+				(gt, ":kxp", 0),
+				(dict_get_str, s1, "$coop_dict", "@battle_player_{reg20}_name"),
+				(assign, ":kx_acctid", 0),
+				(try_begin),
+					(dict_has_key, "$coop_dict", "@battle_player_{reg20}_acctid"),
+					(dict_get_int, ":kx_acctid", "$coop_dict", "@battle_player_{reg20}_acctid"),
+				(try_end),
+				(str_store_string, s10, s1),
+				(call_script, "script_coop_char_store_dict_name_raw", ":kx_acctid"),
+				(dict_create, "$coop_char_stash_dict"),
+				(dict_load_file, "$coop_char_stash_dict", s11),
+				(assign, ":kx_hero", 0),
+				(try_begin),
+					(dict_has_key, "$coop_char_stash_dict", "@char_pending_hero_xp"),
+					(dict_get_int, ":kx_hero", "$coop_char_stash_dict", "@char_pending_hero_xp"),
+				(try_end),
+				(val_add, ":kx_hero", ":kxp"),
+				(dict_set_int, "$coop_char_stash_dict", "@char_pending_hero_xp", ":kx_hero"),
+				(dict_set_int, "$coop_char_stash_dict", "@char_battle_pending", 1),
+				(dict_save, "$coop_char_stash_dict", s11),
+				(dict_free, "$coop_char_stash_dict"),
+				(assign, reg1, ":kxp"),
+				(display_message, "@[BATTLE RESULTS] Phase1: credited {s1} kill_xp={reg1} (hero share)"),
+			(try_end),
 		(try_end),
 
 		# --- Ally casualties (applied to CURRENT party by troop type) ---

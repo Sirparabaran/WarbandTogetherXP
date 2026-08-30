@@ -14979,6 +14979,24 @@ game_menus = [
     ]
   ),
 
+  # Host-only modal: shown once (via the $g_coop_steam_missing simple trigger)
+  # when the Steam client isn't running, so internet "Join Game" invites are
+  # off and friends can only join over LAN. Fires on the campaign map -- the
+  # first context where campaign simple triggers tick after the host loads in.
+  ("coop_steam_warning", 0,
+    "Steam is not running.^^Internet 'Join Game' invites are disabled -- friends can only join over LAN. Start Steam and relaunch the host to enable invites.",
+    "none",
+    [],
+    [
+      ("coop_steam_warning_ok",
+      [],
+      "Continue",
+      [
+        (change_screen_return),
+      ]),
+    ]
+  ),
+
   # Battle chooser: one item per currently-available pool slot. The per-slot
   # availability table ($coop_avail_valid/port/enemy_<s>) is filled by the
   # ch125 battle_available handler and cleared by battle_slot_closed. The init

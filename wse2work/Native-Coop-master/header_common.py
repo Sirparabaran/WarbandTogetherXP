@@ -227,8 +227,12 @@ multiplayer_event_multiplayer_campaign_raise_skill       = 5
 multiplayer_event_multiplayer_campaign_raise_proficiency = 6
 multiplayer_event_multiplayer_campaign_request_char_sync = 7
 multiplayer_event_multiplayer_campaign_identify          = 8
-# 9 free (8-9 were party_sync_begin/stack; 8 reclaimed for identify --
-# client self-reports its Steam account id as lo16/hi16, 0/0 = no Steam)
+# 8-9 were party_sync_begin/stack; 8 reclaimed for identify (client
+# self-reports its Steam account id as lo16/hi16, 0/0 = no Steam),
+# 9 for the upgradeable-counts pull: the hydrate-time ev-22 push races
+# native roster replication on a joining client, so the client requests
+# a re-push once its replicated party is visible.
+multiplayer_event_multiplayer_campaign_request_party_upgradeable = 9
 multiplayer_event_multiplayer_campaign_party_dismiss = 10
 multiplayer_event_multiplayer_campaign_party_upgrade = 11
 multiplayer_event_multiplayer_campaign_sync_pools    = 12

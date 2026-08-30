@@ -94,6 +94,8 @@ static steam_cfg_t g_steam_cfg;
 static int  g_encountered_party_idx = -1;
 static int  g_asi_local_battle_idx  = -1;  /* $g_coop_asi_local_battle: set to 1 by module before local fight */
 static int  g_my_steam_acctid_idx   = -1;  /* $g_coop_my_steam_acctid: republished every 500ms by s59_writer_thread */
+static int  g_return_campaign_idx   = -1;  /* $g_coop_return_to_campaign: battle server said "battle over" -- arm the auto-join return hop */
+static int  g_steam_missing_idx     = -1;  /* $g_coop_steam_missing: republished every 500ms; 1 = host/client role can't find Steam (module shows the in-game warning) */
 
 static void read_config(HINSTANCE hinstDLL) {
     char dll_path[MAX_PATH], ini_path[MAX_PATH];
@@ -199,11 +201,45 @@ static DWORD WINAPI s59_writer_thread(LPVOID param) {
 
         /* Republish the Steam account id every tick: the engine wipes
            module globals on every server connect, and a module-side
-           startup zero must never stick (project-state lesson). */
+           startup zero must never stick (project-state lesson).
+           -1 = "Steam not up right now" -- lets the module send its
+           username-keying identify immediately instead of burning the
+           ~5 s no-report tick budget (which delays new-char creation
+           and battle spawn by that long on no-Steam clients). A later
+           tick overwrites the sentinel with the real acctid if Steam
+           comes up; the module latches identify per connection. */
         if (g_my_steam_acctid_idx >= 0) {
             unsigned int acctid = steam_tunnel_local_acctid();
-            if (acctid != 0)
-                modglobals_set(g_my_steam_acctid_idx, (__int64)acctid);
+            modglobals_set(g_my_steam_acctid_idx, acctid ? (__int64)acctid : -1);
+        }
+
+        /* Publish whether a Steam-needing role has given up finding Steam, so
+           the module can warn the host in-game. Republished every tick for the
+           same reason as the acctid: the engine wipes module globals on connect. */
+        if (g_steam_missing_idx >= 0)
+            modglobals_set(g_steam_missing_idx, steam_tunnel_steam_missing());
+
+        /* Post-battle return hop: the battle server's ch127 ev-55 handler
+           sets $g_coop_return_to_campaign just before the end-of-battle
+           kick; arm the invite auto-join driver at the campaign address
+           (g_host_ip:g_port -- loopback while the joiner tunnel is UP).
+           Edge-latched: the global stays 1 until the engine wipes it on
+           the reconnect this very arm causes, so without the latch this
+           loop would re-arm forever. TUNNEL kind when the client proxy is
+           up so a mid-wait tunnel death aborts the join; LOCAL otherwise. */
+        if (g_return_campaign_idx >= 0) {
+            static int return_latched = 0;
+            if (modglobals_get_int(g_return_campaign_idx, 0) == 1) {
+                if (!return_latched) {
+                    return_latched = 1;
+                    steam_tunnel_autojoin_arm(steam_tunnel_client_is_up()
+                                              ? STEAM_AUTOJOIN_TUNNEL
+                                              : STEAM_AUTOJOIN_LOCAL);
+                    coop_log("[autojoin] battle over -- returning to campaign server\n");
+                }
+            } else {
+                return_latched = 0;
+            }
         }
 
         /* One-shot m_storedPassword prefill: covers the engine's own
@@ -1003,7 +1039,7 @@ BOOL APIENTRY DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
            (ASLR disabled via binary patch). Resolve all setParams-fixup +
            result-reporting IDs in one variables.txt pass. */
         {
-            enum { N_FIXED = 11, N_ALL = N_FIXED + 30 };
+            enum { N_FIXED = 13, N_ALL = N_FIXED + 30 };
             char vars_path[MAX_PATH];
             char cas_names[30][40];
             const char *names[N_ALL];
@@ -1036,6 +1072,8 @@ BOOL APIENTRY DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
                $-form logged "not found" while variables.txt carries the bare
                name. */
             names[n] = "g_coop_my_steam_acctid";       dest[n] = &g_my_steam_acctid_idx;   n++;
+            names[n] = "g_coop_steam_missing";         dest[n] = &g_steam_missing_idx;     n++;
+            names[n] = "g_coop_return_to_campaign";    dest[n] = &g_return_campaign_idx;   n++;
             for (ci = 0; ci < 10; ci++) {
                 _snprintf(cas_names[3*ci], sizeof(cas_names[0]),
                           "$g_coop_pending_cas_tid_%d", ci);

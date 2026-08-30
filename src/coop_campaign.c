@@ -201,72 +201,17 @@ static void coop_on_frame(void) {
 
 static void coop_post_frame(void) {
     /* --- troop_set_xp: authoritative XP write (Fix H) ---
-       Module script sets $g_coop_set_xp_go = 1 to request a direct
-       write to mbTroop.m_experience.  We run after frameMove so the
-       script's global-variable writes are already visible, and any
-       subsequent troop_get_xp in the *next* frame sees the correct
-       value.  coop_save_character also runs in the same frame as the
-       script that sets the flag — but we moved the XP set here
-       (post-tick), so the save still reads the old XP.
+       The module script requests a direct mbTroop.m_experience write by
+       setting $g_coop_set_xp_go = 1 (+ troop/value globals) during its
+       tick; we consume it here, after that frameMove returns, so the
+       script's global writes are already visible and every troop_get_xp
+       from the next frame on sees the corrected value.
 
-       To handle this, the module script defers its save to the next
-       frame via a "set_xp_pending" gate: it sets the flag, skips the
-       save, and lets the next frame's pre-tick pick up the save.
-
-       Actually — simpler: the script already logs the dict_xp for
-       diagnostics.  We process the command here (post-frame), and the
-       only reader of troop XP after this point is coop_save_character,
-       which runs during the SAME frameMove call (earlier in this frame,
-       before the script set the flag).  The NEXT frame will see the
-       corrected XP.  The save that matters is the Phase 2 save or the
-       autosave, both of which run in future frames.
-
-       Wait — coop_load_character AND coop_save_character both run in
-       the same player_joined handler, within the same frameMove call.
-       The save at :51931 reads troop_get_xp AFTER the script sets the
-       flag but BEFORE we get to coop_post_frame.  So the save still
-       captures the wrong XP.
-
-       Fix: skip the save in the script when set_xp was used, and have
-       coop_post_frame trigger the save after writing XP.  But the DLL
-       can't call module scripts.
-
-       Alternative fix: don't defer — instead, have the DLL write XP
-       BEFORE frameMove, by reading the flag in coop_on_frame.  But the
-       flag hasn't been set yet (it's set during frameMove).
-
-       REAL fix: use a TWO-FRAME protocol.
-       Frame N: script sets go=1.  Script marks "xp_deferred" so it
-       skips the immediate save.
-       Frame N+1: DLL coop_on_frame sees go=1, writes XP, clears go.
-       Script's next trigger/joined continues and saves with correct XP.
-       But player_joined is a one-shot — it doesn't span two frames.
-
-       SIMPLEST FIX: write XP inline from the module script using a
-       big positive add_xp_to_troop to reach the target.  If current >
-       target, we're stuck.  For current < target, add the delta.  For
-       current > target, we need the DLL.
-
-       Let's do this: post_frame writes XP.  The save in player_joined
-       captures the STALE xp, but that save's only purpose is to persist
-       Phase 2 XP.  When set_xp is active, Phase 2 hasn't run yet (the
-       set_xp is for the base load, not Phase 2).  So the Phase 2 save
-       path is separate and correct.
-
-       Actually, re-reading the code: coop_save_character at :51931
-       only runs when phase2_applied==1.  And when set_xp_go is set,
-       it's from coop_load_character (base XP).  Phase 2 adds positive
-       XP on top.  The save at :51931 captures troop_get_xp which is
-       (stale_base + phase2_delta).  The stale_base is wrong, but after
-       post_frame writes the correct base, the NEXT save (autosave or
-       exit) will capture the right total.
-
-       This is acceptable for now — the Phase 2 save will be slightly
-       off by the base delta, but the next autosave (300s) corrects it.
-
-       TODO: if this drift is unacceptable, restructure player_joined
-       to split across two frames.
-    */
+       Known accepted drift: a coop_save_character in the SAME frame as
+       the requesting script (the phase-2 save in player_joined) still
+       reads the stale base XP — the DLL cannot call module scripts to
+       re-trigger the save post-write.  The next save (300 s autosave or
+       exit) captures the corrected total, which bounds the drift. */
     if (g_coop_mode != COOP_HOST) return;
     if (g_gvar_set_xp_go < 0) return;
 
@@ -572,7 +517,7 @@ static void install_hooks(void) {
                  "processing (set_xp, deferred commands) is OFFLINE\n");
         return;
     }
-    coop_log("framemove hook installed at campaign mbGame::frameMove 0x%X\n",
+    coop_log("framemove hook installed at campaign mbGame::frameMove 0x%08X\n",
              REBASE(CAMP_ADDR_CAMPAIGN_TICK));
 }
 

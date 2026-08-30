@@ -38,6 +38,12 @@ simple_triggers = [
     (assign, "$g_coop_identify_ticks", 0),
     (assign, "$g_coop_my_steam_acctid", 0),
 
+    # DLL-written, module-read: 1 once a host/client Steam role has waited out
+    # the grace and Steam still isn't running. Assigned here so it emits the
+    # bare name the DLL resolver matches (read-only "$name" emission is unmatchable).
+    (assign, "$g_coop_steam_missing", 0),
+    (assign, "$g_coop_steam_warned", 0),  # module-only latch: warn once per session
+
     # Clear stale battle dict from previous session
     (try_begin),
       (multiplayer_is_server),
@@ -73,6 +79,20 @@ simple_triggers = [
           (party_set_slot, ":center", slot_center_coop_lock_player, -1),
       (try_end),
     (try_end),
+   ]),
+
+  # Warn the host once if the Steam client isn't running. $g_coop_steam_missing
+  # is set by warband_coop.asi when a [Steam] host/client role waits out its
+  # grace and Steam is still down -- internet Join Game invites need Steam, so
+  # the tunnel stays off and only LAN join works. (The DLL now gates its own
+  # SteamAPI_Init retry on SteamAPI_IsSteamRunning, so a missing Steam no
+  # longer leaks address space; this trigger is the user-facing half.)
+  (3,
+   [
+    (eq, "$g_coop_steam_warned", 0),
+    (ge, "$g_coop_steam_missing", 1),
+    (assign, "$g_coop_steam_warned", 1),
+    (jump_to_menu, "mnu_coop_steam_warning"),
    ]),
 
   # Open the battle chooser menu when B is pressed on the campaign map.
@@ -4509,6 +4529,13 @@ simple_triggers = [
               (gt, ":acct_lo", 0),
               (assign, ":do_send", 1),
           (else_try),
+              # ASI sentinel -1: Steam confirmed not up -- send the
+              # username-keying identify NOW instead of burning the tick
+              # budget (the budget stays as the vanilla-client fallback).
+              (lt, ":acct_lo", 0),
+              (assign, ":acct_lo", 0),
+              (assign, ":do_send", 1),
+          (else_try),
               (val_add, "$g_coop_identify_ticks", 1),
               (ge, "$g_coop_identify_ticks", 10),
               (assign, ":do_send", 1),
@@ -4520,6 +4547,29 @@ simple_triggers = [
           (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
               multiplayer_event_multiplayer_campaign_identify, ":acct_lo", ":acct_hi"),
           (assign, "$g_coop_identify_sent", 1),
+      (try_end),
+
+      # --- Client upgradeable-counts pull (once per connection) ---
+      # The server's hydrate-time ev-22 push races native roster
+      # replication: it is sent the same server frame the party is
+      # rebuilt, and the client receive handler drops stack indexes it
+      # doesn't have yet. Pull a re-push once the replicated party is
+      # actually visible; client globals reset per connect, so every
+      # rejoin (= every battle round-trip) re-arms this.
+      (try_begin),
+          (neg|multiplayer_is_server),
+          (multiplayer_is_campaign),
+          (eq, "$g_coop_upg_pull_sent", 0),
+          (multiplayer_get_my_player, ":my_player"),
+          (ge, ":my_player", 0),
+          (player_get_party_id, ":my_party", ":my_player"),
+          (gt, ":my_party", 0),
+          (party_is_active, ":my_party"),
+          (party_get_num_companion_stacks, ":ns", ":my_party"),
+          (gt, ":ns", 0),
+          (multiplayer_send_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_request_party_upgradeable),
+          (assign, "$g_coop_upg_pull_sent", 1),
       (try_end),
 
       # --- Server hydration timeout fallback ---

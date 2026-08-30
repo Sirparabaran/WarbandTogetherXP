@@ -74,6 +74,13 @@ coop_battle_identify_send = (
             (gt, ":acct_lo", 0),
             (assign, ":do_send", 1),
         (else_try),
+            # ASI sentinel -1: Steam confirmed not up -- identify with
+            # username keying NOW; the tick budget stays as the
+            # vanilla-client fallback (unblocks the spawn gate early).
+            (lt, ":acct_lo", 0),
+            (assign, ":acct_lo", 0),
+            (assign, ":do_send", 1),
+        (else_try),
             (val_add, "$g_coop_identify_ticks", 1),
             (ge, "$g_coop_identify_ticks", 5),
             (assign, ":do_send", 1),
@@ -86,21 +93,17 @@ coop_battle_identify_send = (
         (assign, "$g_coop_identify_sent", 1),
        ])
 
-# Server hydration timeout fallback: a player who never sends identify
-# within ~5 s of joining (old/modified client) is hydrated with acctid 0
-# (username keying). The join-time gate is one-shot -- hydrate zeroes
-# slot_player_join_time, which also releases the spawn gate.
-#
-# The first arm handles the engine's startMission slot wipe (the battle
-# server restarts the mission right after first join): a wiped player has
-# char_state 0 AND join_time 0, which would otherwise open the spawn gate
-# unhydrated and starve this timeout forever. Re-stamping a fresh window
-# re-hydrates them within ~5 s -- necessarily via username fallback, since
-# the client's $g_coop_identify_sent latch survives a server-side wipe so
-# identify cannot re-arrive. The spawned_this_round gate keeps the arm off
-# players who already spawned via the failed-load path (hydrate leaves
-# char_state 0 + join_time 0 on a failed load by design), so a dict-less
-# player is not re-stamped into an endless hydrate-retry loop.
+# Server hydration poll: the SOLE hydrator on battle servers. The ch126
+# identify handler only records acctid+1 into the wipe-proof troop-slot
+# mirror (slot_troop_coop_battle_ident); this poll hydrates each
+# unhydrated player as soon as their troop is assigned -- an early
+# identify (before the join trigger) and the engine's startMission
+# player-slot wipes both stop mattering, because the mirror survives and
+# hydration is retried from here with the same key. The ~5 s window +
+# username fallback remains only for clients that never identify
+# (vanilla/no-ASI). A dict-less connection is hydrated once
+# (slot_troop_coop_battle_nodict) so the load's non-idempotent
+# starter-party branch can't run again after a wipe.
 coop_battle_hydrate_timeout = (
       1, 0, 0,
        [(multiplayer_is_server)],
@@ -111,21 +114,56 @@ coop_battle_hydrate_timeout = (
             (player_is_active, ":player_no"),
             (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
             (eq, ":char_state", 0),
-            (player_get_slot, ":bjoin_time", ":player_no", slot_player_join_time),
+            # Hydration targets the player's troop -- wait for the join
+            # trigger to assign it.
+            (player_get_troop_id, ":ptroop", ":player_no"),
+            (ge, ":ptroop", 0),
+            (store_add, ":ident_troop", multiplayer_campaign_player_troops_begin, ":player_no"),
+            (troop_get_slot, ":ident_val", ":ident_troop", slot_troop_coop_battle_ident),
             (try_begin),
-                (eq, ":bjoin_time", 0),
-                (player_slot_eq, ":player_no", slot_player_spawned_this_round, 0),
-                # Post-wipe recovery: open a fresh ~5 s hydration window.
-                (store_mission_timer_a, ":bjoin_time"),
-                (val_max, ":bjoin_time", 1),
-                (player_set_slot, ":player_no", slot_player_join_time, ":bjoin_time"),
+                (gt, ":ident_val", 0),
+                (troop_slot_eq, ":ident_troop", slot_troop_coop_battle_nodict, 0),
+                (store_sub, ":m_acctid", ":ident_val", 1),
+                (call_script, "script_coop_battle_player_hydrate", ":player_no", ":m_acctid"),
+                (try_begin),
+                    (player_slot_eq, ":player_no", slot_player_coop_char_state, coop_char_state_nodict),
+                    (troop_set_slot, ":ident_troop", slot_troop_coop_battle_nodict, 1),
+                (try_end),
             (else_try),
-                (gt, ":bjoin_time", 0),
-                (store_sub, ":waited", ":now", ":bjoin_time"),
-                (gt, ":waited", 5),
-                (call_script, "script_coop_battle_player_hydrate", ":player_no", 0),
+                (eq, ":ident_val", 0),
+                (player_get_slot, ":bjoin_time", ":player_no", slot_player_join_time),
+                (try_begin),
+                    (eq, ":bjoin_time", 0),
+                    (player_slot_eq, ":player_no", slot_player_spawned_this_round, 0),
+                    # Post-wipe recovery for identify-less clients: open a
+                    # fresh ~5 s hydration window.
+                    (store_mission_timer_a, ":bjoin_time"),
+                    (val_max, ":bjoin_time", 1),
+                    (player_set_slot, ":player_no", slot_player_join_time, ":bjoin_time"),
+                (else_try),
+                    (gt, ":bjoin_time", 0),
+                    (store_sub, ":waited", ":now", ":bjoin_time"),
+                    (gt, ":waited", 5),
+                    (call_script, "script_coop_battle_player_hydrate", ":player_no", 0),
+                (try_end),
             (try_end),
         (try_end),
+       ])
+
+# Identify-mirror lifecycle: the troop-slot mirror deliberately survives
+# startMission player-slot wipes, so the ONLY thing that may clear it is
+# the end of the connection that wrote it -- ti_on_player_exit fires
+# reliably for every connection end, half-joined ghosts included
+# (engine RE, project-state). Without this clear, a reused player index
+# would inherit the previous connection's acctid.
+coop_battle_clear_ident_on_exit = (
+      ti_on_player_exit, 0, 0, [],
+       [
+        (store_trigger_param_1, ":player_no"),
+        (store_add, ":ident_troop", multiplayer_campaign_player_troops_begin, ":player_no"),
+        (troop_set_slot, ":ident_troop", slot_troop_coop_battle_ident, 0),
+        (troop_set_slot, ":ident_troop", slot_troop_coop_battle_nodict, 0),
+        (troop_set_slot, ":ident_troop", slot_troop_coop_battle_xp_base, 0),
        ])
 
 coop_store_respawn_as_bot = (
@@ -488,6 +526,7 @@ coop_mission_templates = [
       coop_respawn_as_bot,
       coop_battle_identify_send,
       coop_battle_hydrate_timeout,
+      coop_battle_clear_ident_on_exit,
       coop_store_respawn_as_bot,
 
 
@@ -4664,6 +4703,7 @@ coop_mission_templates = [
       coop_respawn_as_bot,
       coop_battle_identify_send,
       coop_battle_hydrate_timeout,
+      coop_battle_clear_ident_on_exit,
       coop_store_respawn_as_bot,
 
 

@@ -30,9 +30,8 @@ the same PC is fine.
 
 Everyone does Step 1.
 
-> Joining over Steam? That rename is the **only** `coop.ini` step you'll
-> ever do — you never edit the file unless the host set a password
-> (Step 4) or you're on LAN (Step 2B).
+> Joining over Steam? You're done — you never touch `coop.ini` at all
+> unless the host set a password (Step 4) or you're on LAN (Step 2B).
 
 ---
 
@@ -47,8 +46,9 @@ Do **A** or **B**, not both. Then continue to Step 3.
 
 ### A. Steam
 
-**Host ONLY** — open `coop.ini.example` and reanme to `coop.ini` , then in the `[Steam]` section, uncomment this
-line (delete the leading `;`):
+**Host ONLY** — rename `coop.ini.example` to `coop.ini` *(first install
+only — keep your configured `coop.ini` when upgrading)*, then in the
+`[Steam]` section, uncomment this line (delete the leading `;`):
 
 ```ini
 SteamHost=1
@@ -70,7 +70,8 @@ friend's Join Game button (or accepting their invite) in Step 5.
 the `IPv4 Address` line, e.g. `192.168.1.20`) and give it to your
 friends. Leave your own `coop.ini` alone.
 
-**Players** — open `coop.ini` and set the host's IP:
+**Players** — rename `coop.ini.example` to `coop.ini` (if you haven't
+already), open it, and set the host's IP:
 
 ```ini
 HostIP=192.168.1.20
@@ -111,7 +112,8 @@ Password=mypassword
 Max 47 characters. Restart the servers after changing it.
 
 **Players** — put the same line in **your own** `coop.ini`
-(`Password=mypassword`). With it there, invite auto-join sends the
+(`Password=mypassword`; rename `coop.ini.example` to `coop.ini` first if
+you don't have one). With it there, invite auto-join sends the
 password for you, and battle-server hops authenticate automatically.
 Without it, accepting an invite only lands you in the multiplayer
 browser — you can still type the password into the browser's password

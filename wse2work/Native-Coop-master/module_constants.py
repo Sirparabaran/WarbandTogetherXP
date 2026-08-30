@@ -1936,9 +1936,31 @@ slot_player_coop_in_local_encounter = 65
 slot_player_coop_char_state = 66
 coop_char_state_creation = 1  # no dict found; awaiting char-creation completion
 coop_char_state_ready    = 2  # load-or-creation completed; saves allowed
+coop_char_state_nodict   = 3  # battle-server load found no dict; saves stay
+                              # blocked and the hydrate poll stops retrying
 slot_player_coop_steam_acctid = 67  # 32-bit Steam account id self-reported
                                     # via ch49 ev 8 / ch126 ev 54; 0 = no
                                     # Steam (username-keyed persistence)
+
+# Battle-server identify mirror: acctid+1 stored on the player's campaign
+# troop (multiplayer_campaign_player_troops_begin + player_no). Troop slots
+# survive the engine's startMission player-slot wipes, so the one-shot ch126
+# ev-54 identify is never lost to a scene-restart/round wipe (player slot 67
+# is). 0 = no identify received this connection. Written by the ch126
+# identify handler, consumed by the hydrate poll and the post-battle
+# @battle_player_{i}_acctid snapshot, cleared on player exit.
+slot_troop_coop_battle_ident = 157
+# 1 = this connection's char load found no dict. Stops the hydrate poll
+# from re-running the load after a startMission wipe (the starter-party
+# branch is not idempotent). Cleared on player exit with the mirror.
+slot_troop_coop_battle_nodict = 158
+# Battle-server kill-XP baseline: troop XP + 1 recorded at hydrate
+# (0 = unset). The engine credits per-kill XP into the killer's troop
+# during the mission; the snapshot writes the delta over this baseline
+# as @battle_player_{i}_kill_xp, and battle-server char saves cap
+# @char_xp at the baseline so the pending credit stays the single
+# payer. Cleared on player exit with the mirror.
+slot_troop_coop_battle_xp_base = 159
 
 # trp_temp_troop slots for client-side character data (server-pushed)
 slot_coop_char_xp    = 30
@@ -2092,6 +2114,7 @@ coop_event_return_team_troop_num                  = 51
 coop_event_battle_retreat                         = 52
 coop_event_return_is_initiator                    = 53
 coop_event_identify                               = 54
+coop_event_return_to_campaign                     = 55  # ch127 server->client: battle over, auto-reconnect to the campaign server (ASI reads $g_coop_return_to_campaign)
 
 # Coop player slot -- which troop the player has selected for the battle
 # Slots 40-48 are used by invasion mode (ccoop); 49 is free
