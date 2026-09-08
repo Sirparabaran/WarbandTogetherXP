@@ -104,6 +104,13 @@ dialogs = [
 					 (try_begin),
 					    (troop_slot_eq, "$g_talk_troop", slot_troop_met, 0),
 						(troop_set_slot, "$g_talk_troop", slot_troop_met, 1),
+
+                        (try_begin),
+                          (eq, "$g_coop_in_local_visit", 1),
+                          (assign, "$g_coop_pending_relation_troop", "$g_talk_troop"),
+                          (troop_get_slot, "$g_coop_pending_relation_value", "$g_talk_troop", slot_troop_player_relation),
+                          (assign, "$g_coop_pending_relation_met", 1),
+                        (try_end),
 						
 						#Possible later activations of notes
 						(try_begin),
@@ -3077,7 +3084,13 @@ dialogs = [
           ]],
 
   [anyone, "companion_recruit_signup_confirm", [], "Good! Give me a few moments to prepare and I'll be ready to move.", "close_window",
-   [(call_script, "script_recruit_troop_as_companion", "$g_talk_troop")]],
+   [(try_begin),
+      (eq, "$g_coop_in_local_visit", 1),
+      (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+        multiplayer_event_multiplayer_campaign_tavern_hire, "$current_town", "$g_talk_troop", 1),
+    (else_try),
+      (call_script, "script_recruit_troop_as_companion", "$g_talk_troop"),
+    (try_end)]],
 
 
 
@@ -3686,7 +3699,16 @@ dialogs = [
    ],
    "It is. I wish to make war on {s12}.", "minister_declare_war_confirm_yes",
    [
-    (call_script, "script_diplomacy_start_war_between_kingdoms",  "fac_player_supporters_faction", "$g_faction_selected", 1),
+    (try_begin),
+        # Vassalage Phase 4: redirect to the per-player coop path instead of
+        # the shared fac_player_supporters_faction singleton (same pattern
+        # as the Phase 1 swear-fealty redirect).
+        (this_or_next|game_in_multiplayer_mode),
+        (eq, "$g_coop_in_local_visit", 1),
+        (call_script, "script_coop_queue_declare_war", "$g_faction_selected"),
+    (else_try),
+        (call_script, "script_diplomacy_start_war_between_kingdoms",  "fac_player_supporters_faction", "$g_faction_selected", 1),
+    (try_end),
 	]],
 
   [anyone|plyr, "minister_declare_war_confirm",
@@ -6266,7 +6288,7 @@ dialogs = [
    "Well, that is your right, if you indeed have no confidence in our family's commitments. Take your money.", "close_window",
    [
    (quest_get_slot, ":bride", "qst_wed_betrothed", slot_quest_target_troop),
-   (fail_quest, "qst_wed_betrothed"),
+   (call_script, "script_fail_quest", "qst_wed_betrothed"),
    (call_script, "script_end_quest", "qst_wed_betrothed"),
   
    (troop_set_slot, "trp_player", slot_troop_betrothed, -1),
@@ -10415,7 +10437,16 @@ dialogs = [
        (call_script, "script_give_center_to_faction", ":cur_center", "$g_talk_troop_faction"),
      (try_end),
 
-     (call_script, "script_player_join_faction", "$g_talk_troop_faction"),
+     (try_begin),
+         # Vassalage Phase 1: redirect to the per-player coop path instead of
+         # the shared $players_kingdom/fac_player_supporters_faction
+         # singleton (module_coop_scripts.py script_coop_apply_swear_fealty).
+         (this_or_next|game_in_multiplayer_mode),
+         (eq, "$g_coop_in_local_visit", 1),
+         (call_script, "script_coop_queue_swear_fealty", "$g_talk_troop_faction"),
+     (else_try),
+         (call_script, "script_player_join_faction", "$g_talk_troop_faction"),
+     (try_end),
      (assign, "$player_has_homage", 1),
      (call_script, "script_change_player_relation_with_troop", "$g_talk_troop", 3),
      ]],
@@ -12711,7 +12742,8 @@ dialogs = [
          (call_script, "script_change_player_relation_with_troop", "$g_talk_troop", -1),
        (try_end),
        (assign,"$encountered_party_hostile",1),
-       (assign,"$encountered_party_friendly",0),]],
+       (assign,"$encountered_party_friendly",0),
+       (assign, "$g_coop_dialogue_attack_pending", 1),]],
 
 
   [anyone|plyr,"lord_talk", [(eq,"$talk_context", tc_party_encounter),
@@ -12778,6 +12810,7 @@ dialogs = [
    (assign,"$encountered_party_hostile",1),
    (assign,"$encountered_party_friendly",0),
     (call_script, "script_change_player_relation_with_troop", "$g_talk_troop", -30),
+    (assign, "$g_coop_dialogue_attack_pending", 1),
     ]],
 #Post 0907 changes end
   
@@ -13538,8 +13571,16 @@ dialogs = [
       (call_script, "script_player_leave_faction", 0),
     (try_end),
         
-    (call_script, "script_player_join_faction", "$g_talk_troop_faction"),
-        
+    (try_begin),
+        # Vassalage Phase 1: redirect to the per-player coop path (see the
+        # note at the primary pledge-allegiance node).
+        (this_or_next|game_in_multiplayer_mode),
+        (eq, "$g_coop_in_local_visit", 1),
+        (call_script, "script_coop_queue_swear_fealty", "$g_talk_troop_faction"),
+    (else_try),
+        (call_script, "script_player_join_faction", "$g_talk_troop_faction"),
+    (try_end),
+
     (try_begin),
 		(gt, "$g_invite_offered_center", 0),
 		(call_script, "script_give_center_to_lord", "$g_invite_offered_center", "trp_player", 0),
@@ -14366,7 +14407,15 @@ Hand over my {reg19} denars, if you please, and end our business together.", "lo
      (call_script, "script_troop_add_gold", "trp_player", "$temp"),
      (store_current_day, ":cur_day"),
      (store_add, "$mercenary_service_next_renew_day", ":cur_day", 30),
-     (call_script, "script_player_join_faction", "$g_talk_troop_faction"),
+     (try_begin),
+         # Vassalage Phase 1: redirect to the per-player coop path (see the
+         # note at the primary pledge-allegiance node).
+         (this_or_next|game_in_multiplayer_mode),
+         (eq, "$g_coop_in_local_visit", 1),
+         (call_script, "script_coop_queue_swear_fealty", "$g_talk_troop_faction"),
+     (else_try),
+         (call_script, "script_player_join_faction", "$g_talk_troop_faction"),
+     (try_end),
      (str_store_faction_name, s9, "$g_talk_troop_faction"),]],
 
   [anyone,"lord_mercenary_service_accept_3", [], "Now, I suggest you prepare for a serious campaign.\
@@ -21365,7 +21414,22 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
                      (call_script, "script_game_get_join_cost", ":mercenary_troop"),
                      (assign, ":join_cost", reg0),
                      (store_mul, reg5, ":mercenary_amount", reg0),
-                     (party_get_free_companions_capacity, ":free_capacity", "p_main_party"),
+                     # p_main_party is the native SP singleton and has
+                     # nothing to do with a coop player's real party -- its
+                     # capacity is meaningless here, so this always let the
+                     # hire option appear (or clamped against the wrong
+                     # party) regardless of whether the player's own party
+                     # actually had room, and the "can't lead any more men"
+                     # feedback below (keyed on the same wrong party) never
+                     # fired either. Resolve the real party in coop.
+                     (assign, ":cap_party", "p_main_party"),
+                     (try_begin),
+                         (this_or_next|game_in_multiplayer_mode),
+                         (eq, "$g_coop_in_local_visit", 1),
+                         (multiplayer_get_my_player, ":cap_my_player"),
+                         (player_get_party_id, ":cap_party", ":cap_my_player"),
+                     (try_end),
+                     (party_get_free_companions_capacity, ":free_capacity", ":cap_party"),
                      (val_min, ":mercenary_amount", ":free_capacity"),
                      (store_troop_gold, ":cur_gold", "trp_player"),
                      (try_begin),
@@ -21430,15 +21494,29 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
                                           (try_end),],
    "{s17}", "close_window", [
                                           (party_get_slot, ":mercenary_troop", "$g_encountered_party", slot_center_mercenary_troop_type),
-                                          (call_script, "script_game_get_join_cost", ":mercenary_troop"),
-                                          (store_mul, ":total_cost", "$temp", reg0),
-                                          (troop_remove_gold, "trp_player", ":total_cost"),
-                                          (party_add_members, "p_main_party", ":mercenary_troop", "$temp"),
-                                          (party_set_slot, "$g_encountered_party", slot_center_mercenary_troop_amount, 0),
+                                          (try_begin),
+                                            (this_or_next|game_in_multiplayer_mode),
+                                            (eq, "$g_coop_in_local_visit", 1),
+                                            (call_script, "script_coop_queue_tavern_hire",
+                                              "$g_encountered_party", ":mercenary_troop", "$temp"),
+                                          (else_try),
+                                            (call_script, "script_game_get_join_cost", ":mercenary_troop"),
+                                            (store_mul, ":total_cost", "$temp", reg0),
+                                            (troop_remove_gold, "trp_player", ":total_cost"),
+                                            (party_add_members, "p_main_party", ":mercenary_troop", "$temp"),
+                                            (party_set_slot, "$g_encountered_party", slot_center_mercenary_troop_amount, 0),
+                                          (try_end),
                                           ]],
 
   [anyone|plyr, "mercenary_tavern_talk", [(eq, "$temp", 0),
-                                          (party_get_free_companions_capacity, ":free_capacity", "p_main_party"),
+                                          (assign, ":cap_party", "p_main_party"),
+                                          (try_begin),
+                                              (this_or_next|game_in_multiplayer_mode),
+                                              (eq, "$g_coop_in_local_visit", 1),
+                                              (multiplayer_get_my_player, ":cap_my_player"),
+                                              (player_get_party_id, ":cap_party", ":cap_my_player"),
+                                          (try_end),
+                                          (party_get_free_companions_capacity, ":free_capacity", ":cap_party"),
                                           (ge, ":free_capacity", 1)],
    "That sounds good. But I can't afford to hire any more men right now.", "tavern_mercenary_cant_lead", []],
   
@@ -21446,7 +21524,14 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
  if you need to hire anyone.", "close_window", []],
   
   [anyone|plyr, "mercenary_tavern_talk", [(eq, "$temp", 0),
-                                          (party_get_free_companions_capacity, ":free_capacity", "p_main_party"),
+                                          (assign, ":cap_party", "p_main_party"),
+                                          (try_begin),
+                                              (this_or_next|game_in_multiplayer_mode),
+                                              (eq, "$g_coop_in_local_visit", 1),
+                                              (multiplayer_get_my_player, ":cap_my_player"),
+                                              (player_get_party_id, ":cap_party", ":cap_my_player"),
+                                          (try_end),
+                                          (party_get_free_companions_capacity, ":free_capacity", ":cap_party"),
                                           (eq, ":free_capacity", 0)],
    "That sounds good. But I can't lead any more men right now.", "tavern_mercenary_cant_lead", []],
 
@@ -23987,56 +24072,56 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
 
 
 
-  [anyone ,"village_elder_buy_cattle", [(party_get_slot, reg5, "$g_encountered_party", slot_village_number_of_cattle),
-                                        (gt, reg5, 0),
+  [anyone ,"village_elder_buy_cattle", [(try_begin),
+                                        (neg|is_between, "$g_encountered_party", villages_begin, villages_end),
+                                        (assign, "$g_encountered_party", "$current_town"),
+                                        (try_end),
+                                        (party_get_slot, reg5, "$g_encountered_party", slot_village_number_of_cattle),
+                                        (try_begin),
+                                        (this_or_next|game_in_multiplayer_mode),
+                                        (eq, "$g_coop_in_local_visit", 1),
+                                        (call_script, "script_coop_cattle_unit_price"),
+                                        (assign, ":cattle_cost", reg0),
+                                        (else_try),
                                         (store_item_value, ":cattle_cost", "itm_cattle_meat"),
                                         (call_script, "script_game_get_item_buy_price_factor", "itm_cattle_meat"),
                                         (val_mul, ":cattle_cost", reg0),
                                         #Multiplied by 2 and divided by 100
                                         (val_div, ":cattle_cost", 50),
+                                        (try_end),
                                         (assign, "$temp", ":cattle_cost"),
                                         (assign, reg6, ":cattle_cost"),
                                         ],
-   "We have {reg5} heads of cattle, each for {reg6} denars. How many do you want to buy?", "village_elder_buy_cattle_2",[]],
+   "We can supply cattle for {reg6} denars each. How many do you want to buy?", "village_elder_buy_cattle_2",[]],
 
   [anyone ,"village_elder_buy_cattle", [],
    "I am afraid we have no cattle left in the village {sir/madam}.", "village_elder_buy_cattle_2",[]],
 
 
-  [anyone|plyr,"village_elder_buy_cattle_2", [(party_get_slot, ":num_cattle", "$g_encountered_party", slot_village_number_of_cattle),
-                                              (ge, ":num_cattle", 1),
-                                              (store_troop_gold, ":gold", "trp_player"),
+  [anyone|plyr,"village_elder_buy_cattle_2", [(store_troop_gold, ":gold", "trp_player"),
                                               (ge, ":gold", "$temp"),],
    "One.", "village_elder_buy_cattle_complete",[(call_script, "script_buy_cattle_from_village", "$g_encountered_party", 1, "$temp"),
                                                        ]],
   
-  [anyone|plyr,"village_elder_buy_cattle_2", [(party_get_slot, ":num_cattle", "$g_encountered_party", slot_village_number_of_cattle),
-                                              (ge, ":num_cattle", 2),
-                                              (store_troop_gold, ":gold", "trp_player"),
+  [anyone|plyr,"village_elder_buy_cattle_2", [(store_troop_gold, ":gold", "trp_player"),
                                               (store_mul, ":cost", "$temp", 2),
                                               (ge, ":gold", ":cost"),],
    "Two.", "village_elder_buy_cattle_complete",[(call_script, "script_buy_cattle_from_village", "$g_encountered_party", 2, "$temp"),
                                                        ]],
   
-  [anyone|plyr,"village_elder_buy_cattle_2", [(party_get_slot, ":num_cattle", "$g_encountered_party", slot_village_number_of_cattle),
-                                              (ge, ":num_cattle", 3),
-                                              (store_troop_gold, ":gold", "trp_player"),
+  [anyone|plyr,"village_elder_buy_cattle_2", [(store_troop_gold, ":gold", "trp_player"),
                                               (store_mul, ":cost", "$temp", 3),
                                               (ge, ":gold", ":cost"),],
    "Three.", "village_elder_buy_cattle_complete",[(call_script, "script_buy_cattle_from_village", "$g_encountered_party", 3, "$temp"),
                                                        ]],
   
-  [anyone|plyr,"village_elder_buy_cattle_2", [(party_get_slot, ":num_cattle", "$g_encountered_party", slot_village_number_of_cattle),
-                                              (ge, ":num_cattle", 4),
-                                              (store_troop_gold, ":gold", "trp_player"),
+  [anyone|plyr,"village_elder_buy_cattle_2", [(store_troop_gold, ":gold", "trp_player"),
                                               (store_mul, ":cost", "$temp", 4),
                                               (ge, ":gold", ":cost"),],
    "Four.", "village_elder_buy_cattle_complete",[(call_script, "script_buy_cattle_from_village", "$g_encountered_party", 4, "$temp"),
                                                        ]],
   
-  [anyone|plyr,"village_elder_buy_cattle_2", [(party_get_slot, ":num_cattle", "$g_encountered_party", slot_village_number_of_cattle),
-                                              (ge, ":num_cattle", 5),
-                                              (store_troop_gold, ":gold", "trp_player"),
+  [anyone|plyr,"village_elder_buy_cattle_2", [(store_troop_gold, ":gold", "trp_player"),
                                               (store_mul, ":cost", "$temp", 5),
                                               (ge, ":gold", ":cost"),],
    "Five.", "village_elder_buy_cattle_complete",[(call_script, "script_buy_cattle_from_village", "$g_encountered_party", 5, "$temp"),
@@ -24100,7 +24185,9 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
   [anyone|plyr,"village_elder_active_mission_2",[(store_partner_quest,":elder_quest"),
                                                  (eq, ":elder_quest", "qst_deliver_grain"),
                                                  (quest_get_slot, ":quest_target_amount", "qst_deliver_grain", slot_quest_target_amount),
-                                                 (call_script, "script_get_troop_item_amount", "trp_player", "itm_grain"),
+                                                 # In a campaign local visit this is the actual co-op character
+                                                 # (normally trp_player, but keep the scene actor authoritative).
+                                                 (call_script, "script_get_troop_item_amount", "$g_coop_local_player_troop", "itm_grain"),
                                                  (assign, ":cur_amount", reg0),
                                                  (ge, ":cur_amount", ":quest_target_amount"),
                                                  (assign, reg5, ":quest_target_amount"),
@@ -24112,7 +24199,7 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
    "My good {lord/lady}. You have saved us from hunger and desperation. We cannot thank you enough, but you'll always be in our prayers.\
  The village of {s13} will not forget what you have done for us.", "village_elder_deliver_grain_thank_2",
    [(quest_get_slot, ":quest_target_amount", "qst_deliver_grain", slot_quest_target_amount),
-    (troop_remove_items, "trp_player", "itm_grain", ":quest_target_amount"),
+    (troop_remove_items, "$g_coop_local_player_troop", "itm_grain", ":quest_target_amount"),
     (add_xp_as_reward, 400),
     (call_script, "script_change_center_prosperity", "$current_town", 4),
     (call_script, "script_change_player_relation_with_center", "$current_town", 5),
@@ -25526,7 +25613,15 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
 
   [anyone,"party_relieved", [], "Thank you for helping us against those bastards.", "close_window",[]],
 
-  [anyone,"start", [(eq,"$talk_context", tc_party_encounter),(store_encountered_party, reg(5)),(party_get_template_id,reg(7),reg(5)),(eq,reg(7),"pt_sea_raiders")],
+  [anyone,"start", [(eq,"$talk_context", tc_party_encounter),
+    (store_encountered_party, reg(5)),
+    (try_begin),
+      (lt, reg(5), 0),
+      (assign, reg(5), "$g_encountered_party"),
+    (try_end),
+    (ge, reg(5), 0),
+    (party_is_active, reg(5)),
+    (party_get_template_id,reg(7),reg(5)),(eq,reg(7),"pt_sea_raiders")],
    "I will drink from your skull!", "battle_reason_stated",[(play_sound,"snd_encounter_sea_raiders")]],
   
 ######################################
@@ -25581,6 +25676,7 @@ I suppose there are plenty of bounty hunters around to get the job done . . .", 
   [anyone,"party_encounter_hostile_ultimatum_surrender", [],
    "{s43}", "close_window", [
        (call_script, "script_lord_comment_to_s43", "$g_talk_troop", "str_lord_challenged_default"),
+       (assign, "$g_coop_dialogue_attack_pending", 1),
        ]],
 #post 0907 changes end
 

@@ -20,6 +20,233 @@ from module_constants import *
 
 
 simple_triggers = [
+  (0.1, [
+    (multiplayer_is_campaign),
+    (multiplayer_is_server),
+    (store_current_hours, ":now"),
+    (try_for_players, ":player", 1),
+      (player_get_slot, ":escape", ":player", slot_player_coop_escape_hour),
+      (gt, ":escape", 0),
+      (player_get_party_id, ":party", ":player"),
+      (player_get_slot, ":captor", ":player", slot_player_coop_captor),
+      (try_begin),
+        (gt, ":captor", 0),
+        (neq, ":captor", ":party"),
+        (party_is_active, ":captor"),
+        (party_get_position, pos1, ":captor"),
+        (party_set_position, ":party", pos1),
+      (else_try),
+        (assign, ":escape", ":now"),
+      (try_end),
+      (try_begin),
+        (ge, ":now", ":escape"),
+        (enable_party, ":party"),
+        (party_get_position, pos1, ":party"),
+        (map_get_random_position_around_position, pos2, pos1, 12),
+        (party_set_position, ":party", pos2),
+        (player_set_slot, ":player", slot_player_coop_escape_hour, 0),
+        # Short post-escape protection: the player should be able to enter
+        # settlements again soon, without being immediately re-engaged by
+        # the party they escaped from.
+        (store_add, ":safe", ":now", 2),
+        (player_set_slot, ":player", slot_player_coop_safe_until, ":safe"),
+        (call_script, "script_coop_save_character", ":player"),
+        (multiplayer_send_2_int_to_player, ":player", multiplayer_event_multiplayer_campaign_server_events,
+          multiplayer_event_multiplayer_campaign_server_event_captivity, ":party"),
+      (else_try),
+        (disable_party, ":party"),
+      (try_end),
+    (try_end),
+  ]),
+
+  # Hydration can run before a reconnecting client has a campaign-map UI.
+  # Stream a queued dedicated-battle loot source on the following server tick.
+  (0.5, [
+    (multiplayer_is_campaign),
+    (multiplayer_is_server),
+    (try_for_players, ":player_no", 1),
+      (player_slot_eq, ":player_no", slot_player_coop_loot_delivery_state, 1),
+      (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
+        multiplayer_event_multiplayer_campaign_server_event_loot_clear, 0),
+      (try_for_range, ":loot_idx", 0, 12),
+        (store_add, ":item_slot", slot_player_coop_loot_items_begin, ":loot_idx"),
+        (player_get_slot, ":loot_item", ":player_no", ":item_slot"),
+        (gt, ":loot_item", 0),
+        (store_add, ":modifier_slot", slot_player_coop_loot_modifiers_begin, ":loot_idx"),
+        (player_get_slot, ":loot_modifier", ":player_no", ":modifier_slot"),
+        (multiplayer_send_4_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
+          multiplayer_event_multiplayer_campaign_server_event_loot_slot, ":loot_idx", ":loot_item", ":loot_modifier"),
+      (try_end),
+      (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
+        multiplayer_event_multiplayer_campaign_server_event_loot_open, 0),
+      (player_set_slot, ":player_no", slot_player_coop_loot_delivery_state, 2),
+    (try_end),
+  ]),
+
+  # Private siege wars need a small server-side AI bridge because the
+  # campaign uses one shared fac_player_faction for all co-op players.  Only
+  # nearby hostile lords are given a direct pursuit order: issuing it
+  # map-wide made every lord converge permanently on one player.
+  #
+  # Fixed 2026-09-08 (was a deliberate placeholder, per the comment above --
+  # unconditional pursuit regardless of relative strength): now compares
+  # script_party_calculate_strength (same generic function
+  # coop_check_lord_flee_ai uses) before deciding attack vs. avoid, so a
+  # lord flees a stronger player instead of always closing in. This runs
+  # every second and takes precedence in practice over
+  # coop_check_lord_flee_ai's hourly kingdom-war check for any lord both
+  # cover -- kept as two separate mechanisms (immediate personal siege
+  # hostility vs. periodic formal kingdom war), now consistent with each
+  # other instead of contradicting.
+  (1, [
+    (multiplayer_is_campaign),
+    (multiplayer_is_server),
+    (try_for_players, ":player"),
+      (player_get_party_id, ":player_party", ":player"),
+      (party_is_active, ":player_party"),
+      (player_get_slot, ":escape_hour", ":player", slot_player_coop_escape_hour),
+      (eq, ":escape_hour", 0),
+      (party_get_slot, ":hostile_faction", ":player_party", slot_party_coop_hostile_faction),
+      (is_between, ":hostile_faction", kingdoms_begin, kingdoms_end),
+      (try_for_parties, ":lord_party"),
+        (party_is_active, ":lord_party"),
+        (neq, ":lord_party", ":player_party"),
+        (party_slot_eq, ":lord_party", slot_party_type, spt_kingdom_hero_party),
+        (store_faction_of_party, ":lord_faction", ":lord_party"),
+        (eq, ":lord_faction", ":hostile_faction"),
+        (party_slot_eq, ":lord_party", slot_party_coop_battle_slot, 0),
+        (store_distance_to_party_from_party, ":distance", ":lord_party", ":player_party"),
+        (lt, ":distance", 12),
+        (call_script, "script_party_calculate_strength", ":lord_party", 0),
+        (assign, ":lord_strength", reg0),
+        (call_script, "script_party_calculate_strength", ":player_party", 0),
+        (assign, ":player_strength", reg0),
+        (try_begin),
+            (gt, ":player_strength", ":lord_strength"),
+            (party_set_ai_behavior, ":lord_party", ai_bhvr_avoid_party),
+        (else_try),
+            (party_set_ai_behavior, ":lord_party", ai_bhvr_attack_party),
+        (try_end),
+        (party_set_ai_object, ":lord_party", ":player_party"),
+        (party_set_flags, ":lord_party", pf_default_behavior, 1),
+      (try_end),
+    (try_end),
+  ]),
+
+  # The native campaign AI can refresh a party's battle link while a battle
+  # is in progress.  Rate-limit these chat notices per lord, rather than
+  # treating every refreshed link as a new battle.
+  (0.1, [
+    (multiplayer_is_campaign),
+    (multiplayer_is_server),
+    (store_current_hours, ":now"),
+    (try_for_parties, ":lord_party"),
+      (party_is_active, ":lord_party"),
+      (party_slot_eq, ":lord_party", slot_party_type, spt_kingdom_hero_party),
+      (party_get_player_id, ":owner_player", ":lord_party"),
+      (lt, ":owner_player", 0),
+      (party_get_battle_opponent, ":opponent_party", ":lord_party"),
+      (try_begin),
+        (gt, ":opponent_party", 0),
+        (party_is_active, ":opponent_party"),
+        (party_get_slot, ":last_report", ":lord_party", slot_party_coop_world_battle_report_hour),
+        (store_add, ":next_report", ":last_report", 6),
+        (ge, ":now", ":next_report"),
+        (party_set_slot, ":lord_party", slot_party_coop_world_battle_report_hour, ":now"),
+        (try_for_players, ":event_player"),
+          (multiplayer_send_3_int_to_player, ":event_player", multiplayer_event_multiplayer_campaign_server_events, multiplayer_event_multiplayer_campaign_server_event_world_event, coop_world_event_lord_battle, ":lord_party"),
+        (try_end),
+      (try_end),
+    (try_end),
+  ]),
+
+  # Reconnect-safe uploads for dialogue mutations made while the ASI exposes
+  # a local settlement mission as gameType=0.
+  (0,
+   [
+    (game_in_multiplayer_mode),
+    (neg|multiplayer_is_server),
+    (call_script, "script_coop_flush_quest_queue"),
+    (call_script, "script_coop_flush_cattle_queue"),
+    (call_script, "script_coop_flush_tavern_queue"),
+    (try_begin),
+      (gt, "$g_coop_pending_relation_troop", 0),
+      (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+        multiplayer_event_multiplayer_campaign_relation_set,
+        "$g_coop_pending_relation_troop", "$g_coop_pending_relation_value", "$g_coop_pending_relation_met"),
+      (assign, "$g_coop_pending_relation_troop", 0),
+    (try_end),
+    (try_begin),
+      (gt, "$g_coop_pending_relation_center", 0),
+      (store_sub, ":relation_id", -1, "$g_coop_pending_relation_center"),
+      (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+        multiplayer_event_multiplayer_campaign_relation_set,
+        ":relation_id", "$g_coop_pending_relation_center_value", 0),
+      (assign, "$g_coop_pending_relation_center", 0),
+    (try_end),
+   ]),
+
+
+  # Reliable cleanup for a server-forced troop assignment. The receive
+  # handler may run while the presentation is being refreshed, so retry from
+  # the client game loop instead of relying on one presentation_set_duration.
+  #
+  # Fixed 2026-09-08: was gated solely on the one-shot
+  # $coop_force_close_troop_select flag, set exactly once when the server's
+  # own force-assign broadcast first arrives (module_coop_scripts.py, the
+  # coop_event_player_set_slot receive handler). But
+  # module_coop_presentations.py's team-select confirmation flow
+  # (~line 1637-1646) can reopen prsnt_coop_troop_select later on its own --
+  # it only skips reopening if slot_player_coop_selected_troop already
+  # reads as set locally, which can still be unset if that confirmation
+  # fires before the server's broadcast lands (hydration can take up to
+  # ~5s for a non-identifying client, module_coop_mission_templates.py). By
+  # the time that race-reopened instance appears, the one-shot flag has
+  # already been consumed once and nothing re-arms it, so it never closes.
+  # Checking the player's actual forced-troop state directly every tick
+  # (instead of only reacting to that single edge-triggered flag) closes
+  # any such instance regardless of ordering.
+  (0.1, [
+    (multiplayer_is_campaign),
+    (neg|multiplayer_is_server),
+    (multiplayer_get_my_player, ":my_player_no"),
+    (player_get_slot, ":forced_troop", ":my_player_no", slot_player_coop_selected_troop),
+    (gt, ":forced_troop", 0),
+    (try_begin),
+      (this_or_next|is_presentation_active, "prsnt_coop_troop_select"),
+      (this_or_next|is_presentation_active, "prsnt_coop_team_select"),
+      (is_presentation_active, "prsnt_coop_commander_select"),
+      (presentation_set_duration, 0),
+    (try_end),
+    (assign, "$coop_force_close_troop_select", 0),
+  ]),
+
+  # Periodically persist active quest progress for the local co-op character.
+  (10,
+   [
+    (game_in_multiplayer_mode),
+    (neg|multiplayer_is_server),
+    (try_for_range, ":quest_no", all_quests_begin, all_quests_end),
+      (check_quest_active, ":quest_no"),
+      (neg|check_quest_concluded, ":quest_no"),
+      (quest_get_slot, ":state", ":quest_no", slot_quest_current_state),
+      (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+        multiplayer_event_multiplayer_campaign_quest_status, ":quest_no", 0, ":state"),
+    (try_end),
+   ]),
+
+  # Clear settlement locks left by a client that disconnected/crashed before
+  # it could send the normal visit_done event.
+  (15,
+   [
+    (multiplayer_is_server),
+    (try_for_range, ":center_no", centers_begin, centers_end),
+      (party_get_slot, ":lock_player", ":center_no", slot_center_coop_lock_player),
+      (ge, ":lock_player", 0),
+      (neg|player_is_active, ":lock_player"),
+      (party_set_slot, ":center_no", slot_center_coop_lock_player, -1),
+    (try_end),
+   ]),
 
   # Display server IP on first tick (s59 is set by warband_coop.asi from coop.ini)
   (0,
@@ -27,6 +254,33 @@ simple_triggers = [
     (eq, "$g_coop_server_ip_loaded", 0),
     (assign, "$g_coop_server_ip_loaded", 1),
     (display_message, "@COOP: battle servers={s59}:7241-7247"),
+
+    # Vassalage Phase 5: player-founded kingdom pool starts idle/unowned.
+    # Moved here 2026-09-08 from module_scripts.py's game_start (same
+    # unconditional scope -- every process, not just the dedicated server):
+    # game_start is native single-player's "new game started" event and is
+    # not known to fire reliably (or at all) for a WSE2 dedicated
+    # multiplayer campaign server's actual boot sequence, unlike this
+    # self-consuming "first tick" trigger, which is already proven correct
+    # in production for this exact class of startup-only reset (see the
+    # center-lock init and battle-slot dict sweep further down). Harmless
+    # in native SP -- nothing ever touches these faction ids there.
+    (faction_set_slot, "fac_player_faction_1", slot_faction_state, sfs_inactive),
+    (faction_set_slot, "fac_player_faction_1", slot_faction_coop_owner_troop, -1),
+    (faction_set_slot, "fac_player_faction_2", slot_faction_state, sfs_inactive),
+    (faction_set_slot, "fac_player_faction_2", slot_faction_coop_owner_troop, -1),
+    (faction_set_slot, "fac_player_faction_3", slot_faction_state, sfs_inactive),
+    (faction_set_slot, "fac_player_faction_3", slot_faction_coop_owner_troop, -1),
+    (faction_set_slot, "fac_player_faction_4", slot_faction_state, sfs_inactive),
+    (faction_set_slot, "fac_player_faction_4", slot_faction_coop_owner_troop, -1),
+
+    # trp_player is Native's single-player placeholder. Co-op players have
+    # dedicated replicated troop records and are exposed separately.
+    (try_begin),
+      (game_in_multiplayer_mode),
+      (neg|multiplayer_is_dedicated_server),
+      (troop_set_note_available, "trp_player", 0),
+    (try_end),
 
     # $g_coop_my_steam_acctid is DLL-written, module-read (Task 4). A module
     # assignment is still required: read-only globals are emitted into
@@ -36,7 +290,9 @@ simple_triggers = [
     # (client send latch + no-acctid retry counter).
     (assign, "$g_coop_identify_sent", 0),
     (assign, "$g_coop_identify_ticks", 0),
+    (assign, "$g_coop_char_pull_sent", 0),
     (assign, "$g_coop_my_steam_acctid", 0),
+    (assign, "$g_coop_local_player_troop", "trp_player"),
 
     # DLL-written, module-read: 1 once a host/client Steam role has waited out
     # the grace and Steam still isn't running. Assigned here so it emits the
@@ -78,6 +334,21 @@ simple_triggers = [
       (try_for_range, ":center", centers_begin, centers_end),
           (party_set_slot, ":center", slot_center_coop_lock_player, -1),
       (try_end),
+
+      # Settlement persistence (Vassalage Phase 6): reconstitute faction/
+      # construction/building state from the last session's
+      # coop_world.wsedict. Moved here 2026-09-08 from module_scripts.py's
+      # game_start -- that hook is native single-player's "new game
+      # started" event and is not known to fire reliably (or at all) for a
+      # WSE2 dedicated multiplayer campaign server's actual boot sequence,
+      # unlike this self-consuming "first tick" trigger, which is already
+      # proven correct in production for the exact same class of
+      # startup-only world-state reset (the center-lock init immediately
+      # above it, and the battle-slot dict sweep above that). This was the
+      # likely real cause of a report that a captured castle reverted to
+      # its original faction after a server restart -- coop_world_load_startup
+      # was almost certainly just never running at all.
+      (call_script, "script_coop_world_load_startup"),
     (try_end),
    ]),
 
@@ -95,11 +366,38 @@ simple_triggers = [
     (jump_to_menu, "mnu_coop_steam_warning"),
    ]),
 
+  # Open Native's dynamic quest Notes list. The old co-op menu contained only
+  # seven hard-coded quest types and therefore appeared empty for most quests.
+  (0,
+   [
+    (game_in_multiplayer_mode),
+    (neg|multiplayer_is_dedicated_server),
+    (game_key_clicked, gk_quests_window),
+    (change_screen_notes, 4, 0),
+   ]),
+
+  # A local map conversation has no valid Native menu-stack parent in the
+  # multiplayer campaign. Once its dialogue closes, explicitly discard the
+  # encounter screen and return to the live campaign map.
+  (0,
+   [
+    (eq, "$g_coop_map_talk_pending", 1),
+    (neg|conversation_screen_is_active),
+    (neq, "$g_coop_dialogue_attack_pending", 1),
+    (assign, "$g_coop_map_talk_pending", 0),
+    (assign, "$g_coop_dialogue_attack_pending", 0),
+    (assign, "$g_coop_battle_requested", 0),
+    (multiplayer_send_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+        multiplayer_event_multiplayer_campaign_leave_encounter),
+    (end_current_battle),
+    (leave_encounter),
+    # Clear globals only after leave_encounter has consumed the active target.
+    (assign, "$g_coop_center_party", 0),
+    (assign, "$g_encountered_party", 0),
+    (jump_to_menu, "mnu_auto_return_to_map"),
+   ]),
+
   # Open the battle chooser menu when B is pressed on the campaign map.
-  # (Presentations do not render on the MP campaign map -- game menus do,
-  # same as the coop encounter menus.) The menu lists every available pool
-  # slot; the initiator's auto-connect is handled by the
-  # $g_coop_battle_connect_pending trigger below.
   (0,
    [
     (eq, "$g_coop_battle_available", 1),
@@ -110,6 +408,20 @@ simple_triggers = [
   # Deferred battle-server connect: multiplayer_connect_to_server must run
   # from game-loop context, not the network receive handler (same rule as
   # the ev-9 leave_encounter flag).
+  (0,
+   [
+    # A local Native conversation cannot mutate the server-owned encounter.
+    # Convert its committed "surrender or die" result into the same
+    # authoritative battle request used by the encounter menu's Fight button.
+    (eq, "$g_coop_dialogue_attack_pending", 1),
+    (assign, "$g_coop_dialogue_attack_pending", 0),
+    (assign, "$g_coop_battle_requested", 1),
+    (multiplayer_send_int_to_server,
+        multiplayer_event_multiplayer_campaign_client_events,
+        multiplayer_event_multiplayer_campaign_start_battle),
+    (display_message, "@Declaring the attack and preparing the battle..."),
+   ]),
+
   (0,
    [
     (eq, "$g_coop_battle_connect_pending", 1),
@@ -128,15 +440,6 @@ simple_triggers = [
     (eq, "$g_coop_password_applied", 0),
     (multiplayer_is_dedicated_server),
     (call_script, "script_coop_apply_server_password"),
-   ]),
-
-  # DEBUG: make all parties visible on map (remove when not needed)
-  (6,
-   [
-    (try_for_parties, ":party_no"),
-      (party_is_active, ":party_no"),
-      (party_set_flags, ":party_no", pf_always_visible, 1),
-    (try_end),
    ]),
 
 # This trigger is deprecated. Use "script_game_event_party_encounter" in module_scripts.py instead
@@ -158,6 +461,11 @@ simple_triggers = [
       (assign, "$g_coop_encounter_done", 0),
       (end_current_battle),
       (leave_encounter),
+      # The server can resolve a local center visit while the client is back
+      # on mnu_coop_center_encounter.  leave_encounter clears the campaign
+      # encounter but does not pop that game-menu window, leaving its Leave
+      # button with no valid return window.  Return to the map explicitly.
+      (jump_to_menu, "mnu_auto_return_to_map"),
       (display_message, "@Encounter cleared."),
     (try_end),
     # Send pending local battle results on campaign rejoin.
@@ -231,9 +539,33 @@ simple_triggers = [
     # Detect return from local SP center visit and notify server
     (try_begin),
       (eq, "$g_coop_in_local_visit", 1),
+      # Copy tavern payments back from Native's hard-coded trp_player to the
+      # synchronized co-op troop before the normal character diff/save path.
+      (try_begin),
+        (eq, "$g_coop_tavern_active", 1),
+        (assign, "$g_coop_tavern_active", 0),
+        (store_troop_gold, ":tavern_gold", "trp_player"),
+        (store_troop_gold, ":coop_gold", "$g_coop_local_player_troop"),
+        (try_begin),
+          (gt, ":coop_gold", 0),
+          (troop_remove_gold, "$g_coop_local_player_troop", ":coop_gold"),
+        (try_end),
+        (troop_add_gold, "$g_coop_local_player_troop", ":tavern_gold"),
+      (try_end),
       # If we're here (simple trigger on campaign map), the visit mission has ended.
       # Send visit_done event to server.
       (assign, "$g_coop_in_local_visit", 0),
+      # Only send the NPC actually spoken to. Sending every locally cached
+      # NPC could overwrite valid server values with uninitialised zeroes.
+      (try_begin),
+        (is_between, "$g_talk_troop", active_npcs_begin, active_npcs_end),
+        (troop_get_slot, ":relation", "$g_talk_troop", slot_troop_player_relation),
+        (troop_get_slot, ":met", "$g_talk_troop", slot_troop_met),
+        (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+          multiplayer_event_multiplayer_campaign_relation_set, "$g_talk_troop", ":relation", ":met"),
+      (try_end),
+      # Flush quest mutations before releasing the local settlement visit.
+      (call_script, "script_coop_flush_quest_queue"),
       (multiplayer_send_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
           multiplayer_event_multiplayer_campaign_local_visit_done),
       (display_message, "@Center visit complete."),
@@ -886,12 +1218,60 @@ simple_triggers = [
     (assign, "$g_half_payment_checkpoint", 0),
     ]),
 
+  # Vassalage Phase 3: once a day, appoint the highest-renown connected
+  # vassal as marshal of any active kingdom with a vacant marshal post.
+  # Title-only (no interactive vote, no army-summon) -- see
+  # docs/flows/vassalage.md.
+  (24,
+   [
+   (this_or_next|multiplayer_is_server),
+   (neg|game_in_multiplayer_mode),
+
+   (call_script, "script_coop_check_marshal_vacancies"),
+   ]),
+
+  # Lord flee-when-weaker AI: once an hour, re-evaluate pursue-vs-flee for
+  # every active lord against nearby at-war connected players. Native's own
+  # strategic AI (which would normally do this) is dead in multiplayer --
+  # see docs/flows/vassalage.md. Server-only, no native-SP fallback: native
+  # SP already has real AI for this and must not be second-guessed there.
+  (1,
+   [
+   (multiplayer_is_server),
+   (game_in_multiplayer_mode),
+
+   (call_script, "script_coop_check_lord_flee_ai"),
+   ]),
+
+  # Vassalage Phase 6: once a day, complete finished settlement construction
+  # projects and pay tax income to connected owners -- see
+  # docs/flows/vassalage.md.
+  (24,
+   [
+   (this_or_next|multiplayer_is_server),
+   (neg|game_in_multiplayer_mode),
+
+   (call_script, "script_coop_check_center_manage_daily"),
+   ]),
+
+  # Quest Tier A: server-side completion detection for the 3 quest types
+  # whose native success/fail trigger is multiplayer-gated (see
+  # docs/flows/quests.md). Interval matches native's own cadence for the
+  # cattle-herd distance checks this replaces.
+  (0.5,
+   [
+   (this_or_next|multiplayer_is_server),
+   (neg|game_in_multiplayer_mode),
+
+   (call_script, "script_coop_check_tier_a_quest_progress"),
+   ]),
+
 #diplomatic indices
   (24,
    [
    (this_or_next|multiplayer_is_server),
    (neg|game_in_multiplayer_mode),
-   
+
    (call_script, "script_randomly_start_war_peace_new", 1),
 
    (try_begin),
@@ -2076,9 +2456,40 @@ simple_triggers = [
 		 (party_is_active, ":troop_party_no"),
 		 
          (party_get_attached_to, ":cur_attached_town", ":troop_party_no"),
+         (party_get_slot, ":lord_ai_state", ":troop_party_no", slot_party_ai_state),
+         (party_get_slot, ":lord_ai_object", ":troop_party_no", slot_party_ai_object),
+
+         # Repair parties saved while caught by the old reattachment loop.  An
+         # attached lord is legitimate only while his order targets that center.
+         (assign, ":should_remain_attached", 0),
+         (try_begin),
+           (eq, ":lord_ai_object", ":cur_attached_town"),
+           (this_or_next|eq, ":lord_ai_state", spai_holding_center),
+           (this_or_next|eq, ":lord_ai_state", spai_retreating_to_center),
+           (eq, ":lord_ai_state", spai_visiting_village),
+           (assign, ":should_remain_attached", 1),
+         (try_end),
+         (try_begin),
+           (gt, ":cur_attached_town", 0),
+           (eq, ":should_remain_attached", 0),
+           (party_detach, ":troop_party_no"),
+         (try_end),
+
          (lt, ":cur_attached_town", 1),
          (party_get_cur_town, ":destination", ":troop_party_no"),
          (is_between, ":destination", centers_begin, centers_end),
+
+         # On the dedicated campaign server this trigger runs quickly enough to
+         # catch a lord at the center on the same tick that party_set_ai_state
+         # detached him to begin a new journey.  Reattaching him here leaves the
+         # movement order unchanged, so the next AI calculation takes the
+         # same-state fast path and the lord remains hidden in the center.
+         # Only attach parties whose current order actually ends at this center.
+         (eq, ":lord_ai_object", ":destination"),
+         (this_or_next|eq, ":lord_ai_state", spai_holding_center),
+         (this_or_next|eq, ":lord_ai_state", spai_retreating_to_center),
+         (eq, ":lord_ai_state", spai_visiting_village),
+
          (call_script, "script_get_relation_between_parties", ":destination", ":troop_party_no"),
          (try_begin),
            (ge, reg0, 0),
@@ -2581,8 +2992,10 @@ simple_triggers = [
   # Centers give alarm if the player is around
   (0.5,
    [
-     (neg|game_in_multiplayer_mode),
-   
+     # Native cattle delivery must also evaluate on the co-op campaign map;
+     # the server owns the replicated herd parties and quest synchronization
+     # uploads the resulting progress.
+
      (store_current_hours, ":cur_hours"),
      (store_mod, ":cur_hours_mod", ":cur_hours", 11),
      (store_sub, ":hour_limit", ":cur_hours", 5),
@@ -3055,6 +3468,13 @@ simple_triggers = [
       (store_random_in_range, ":random_days", 12, 15),
       (party_set_slot, ":random_town", slot_town_has_tournament, ":random_days"),
       (try_begin),
+        (multiplayer_is_server),
+        (try_for_players, ":event_player", 1),
+          (multiplayer_send_3_int_to_player, ":event_player", multiplayer_event_multiplayer_campaign_server_events,
+            multiplayer_event_multiplayer_campaign_server_event_world_event, 1, ":random_town"),
+        (try_end),
+      (try_end),
+      (try_begin),
         (eq, "$cheat_mode", 1),
         (str_store_party_name, s1, ":random_town"),
         (display_message, "@{!}{s1} is holding a tournament."),
@@ -3338,8 +3758,11 @@ simple_triggers = [
     ]),
 
   # Read books if player is resting.
-  (1, [(neg|game_in_multiplayer_mode),
-  
+  (1, [
+       # Native tax collection must advance on the co-op campaign map too.
+       # The local collecting menu owns the timers; the regular quest sync
+       # trigger uploads the resulting state and reward amount.
+
        (neg|map_free),
        (gt, "$g_player_reading_book", 0),
        (player_has_item, "$g_player_reading_book"),
@@ -3768,6 +4191,12 @@ simple_triggers = [
        (neg|check_quest_succeeded, "qst_deliver_cattle_to_army"),
        (quest_get_slot, ":giver_troop", "qst_deliver_cattle_to_army", slot_quest_giver_troop),
        (troop_get_slot, ":target_party", ":giver_troop", slot_troop_leaded_party),
+       # A reconnecting client may not yet have the lord's troop slot. The
+       # replicated quest target is the authoritative fallback.
+       (try_begin),
+         (le, ":target_party", 0),
+         (quest_get_slot, ":target_party", "qst_deliver_cattle_to_army", slot_quest_target_party),
+       (try_end),
        (try_begin),
          (gt, ":target_party", 0),
          (quest_get_slot, ":target_amount", "qst_deliver_cattle_to_army", slot_quest_target_amount),
@@ -3789,8 +4218,10 @@ simple_triggers = [
 # Train peasants against bandits
   (1,
    [
-     (neg|game_in_multiplayer_mode),
-	 
+	 # This Native objective must also run on the co-op campaign map. The
+	 # player trains locally, while quest progress is uploaded by the normal
+	 # quest-status sync trigger.
+
      (neg|map_free),
      (check_quest_active, "qst_train_peasants_against_bandits"),
      (neg|check_quest_concluded, "qst_train_peasants_against_bandits"),
@@ -4506,6 +4937,36 @@ simple_triggers = [
 		(try_end),
 	]),
 
+  # Server-authoritative weekly payroll. Campaign time is measured in hours,
+  # so this runs every 168 hours (seven days) rather than wall-clock time.
+  (168,
+   [
+      (multiplayer_is_server),
+      (multiplayer_is_campaign),
+      (try_for_players, ":player_no", 1),
+          (player_is_active, ":player_no"),
+          (player_get_slot, ":char_state", ":player_no", slot_player_coop_char_state),
+          (eq, ":char_state", coop_char_state_ready),
+          (player_get_party_id, ":party_no", ":player_no"),
+          (party_is_active, ":party_no"),
+          (call_script, "script_coop_calculate_weekly_player_wage", ":player_no"),
+          (assign, ":due", reg0),
+          (player_get_troop_id, ":troop_no", ":player_no"),
+          (store_troop_gold, ":gold", ":troop_no"),
+          (assign, ":paid", ":due"),
+          (val_min, ":paid", ":gold"),
+          (try_begin),
+              (gt, ":paid", 0),
+              (troop_remove_gold, ":troop_no", ":paid"),
+          (try_end),
+          (store_troop_gold, ":remaining", ":troop_no"),
+          (call_script, "script_coop_save_character", ":player_no"),
+          (call_script, "script_coop_char_pack_send_core", ":player_no"),
+          (multiplayer_send_4_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
+              multiplayer_event_multiplayer_campaign_server_event_wage_result, ":due", ":paid", ":remaining"),
+      (try_end),
+   ]),
+
   # Screen close poller: party + character snapshot-diff
   (0.5,
    [
@@ -4547,6 +5008,26 @@ simple_triggers = [
           (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
               multiplayer_event_multiplayer_campaign_identify, ":acct_lo", ":acct_hi"),
           (assign, "$g_coop_identify_sent", 1),
+      (try_end),
+
+      # --- Client character pull (once per connection) ---
+      # The hydrate push can race replication of the local player's troop.
+      # Pull again only after identity and local troop/party are available.
+      (try_begin),
+          (neg|multiplayer_is_server),
+          (multiplayer_is_campaign),
+          (eq, "$g_coop_identify_sent", 1),
+          (eq, "$g_coop_char_pull_sent", 0),
+          (multiplayer_get_my_player, ":my_player"),
+          (ge, ":my_player", 0),
+          (player_get_troop_id, ":my_troop", ":my_player"),
+          (is_between, ":my_troop", multiplayer_campaign_player_troops_begin, multiplayer_campaign_player_troops_end),
+          (player_get_party_id, ":my_party", ":my_player"),
+          (gt, ":my_party", 0),
+          (party_is_active, ":my_party"),
+          (multiplayer_send_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_request_char_sync),
+          (assign, "$g_coop_char_pull_sent", 1),
       (try_end),
 
       # --- Client upgradeable-counts pull (once per connection) ---
@@ -4597,6 +5078,32 @@ simple_triggers = [
           (try_end),
       (try_end),
 
+      # The server has pushed an authoritative player-inventory baseline.
+      # Open the real two-column native loot screen only after that baseline
+      # arrives, so its close diff can be validated against server state.
+      (try_begin),
+          (neg|multiplayer_is_server),
+          (multiplayer_is_campaign),
+          (eq, "$g_coop_native_loot_pending", 1),
+          (eq, "$g_coop_inv_snap_ready", 1),
+          (assign, "$g_coop_native_loot_pending", 0),
+          # Opening a window does not stop this operation block. Do not
+          # let its close poll consume the loot allowance on this same tick.
+          (assign, "$g_coop_inv_screen_open", 0),
+          (jump_to_menu, "mnu_coop_claim_battle_loot"),
+      (try_end),
+
+      # Battle rewards are granted by the campaign server first. Delay the
+      # client-side confirmation menu until the player is back on the map,
+      # because dedicated-battle reconnect packets can arrive during loading.
+      (try_begin),
+          (neg|multiplayer_is_server),
+          (multiplayer_is_campaign),
+          (eq, "$g_coop_battle_loot_pending", 1),
+          (assign, "$g_coop_battle_loot_pending", 0),
+          (jump_to_menu, "mnu_coop_battle_loot"),
+      (try_end),
+
       # --- Party screen close ---
       # Simple triggers pause during native windows, so open==1 here
       # means the party screen just closed (same pattern as inventory).
@@ -4638,6 +5145,25 @@ simple_triggers = [
       # snap_ready gate: if the server's baseline push hasn't landed yet,
       # wait until it does before running the diff (char-screen pattern).
       (try_begin),
+          (eq, "$g_coop_loot_screen_open", 1),
+          (eq, "$g_coop_inv_screen_open", 1),
+          (eq, "$g_coop_inv_snap_ready", 1),
+          # Empty source slots are items the player took. Claim each once;
+          # the campaign server grants and persists the authoritative copy.
+          (try_for_range, ":loot_idx", 0, 12),
+              (store_add, ":source_slot", ":loot_idx", 10),
+              (troop_get_inventory_slot, ":remaining", "trp_find_item_cheat", ":source_slot"),
+              (le, ":remaining", 0),
+              (multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+                  multiplayer_event_multiplayer_campaign_loot_claim, ":loot_idx"),
+          (try_end),
+          (multiplayer_send_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_loot_done),
+          (assign, "$g_coop_loot_screen_open", 0),
+          (assign, "$g_coop_inv_screen_open", 0),
+          (assign, "$g_coop_inv_snap_ready", 0),
+      (else_try),
+          (eq, "$g_coop_native_loot_pending", 0),
           (eq, "$g_coop_inv_screen_open", 1),
           (eq, "$g_coop_inv_snap_ready", 1),
           (assign, "$g_coop_inv_screen_open", 2),

@@ -397,6 +397,15 @@ troops = [
    [itm_heavy_lance,itm_sword_two_handed_b,itm_sword_medieval_d_long,itm_morningstar,itm_morningstar,itm_sword_medieval_d_long,itm_tab_shield_heater_cav_b,
     itm_coat_of_plates_red,itm_cuir_bouilli,itm_plate_boots,itm_guard_helmet,itm_great_helmet,itm_bascinet,itm_charger,itm_warhorse,itm_gauntlets,itm_mail_mittens],
    def_attrib|level(28),wp_one_handed (150) | wp_two_handed (130) | wp_polearm (130) | wp_archery (75) | wp_crossbow (75) | wp_throwing (75),knows_common|knows_riding_5|knows_shield_5|knows_ironflesh_5|knows_power_strike_5,swadian_face_middle_1, swadian_face_older_2],
+  # Co-op debug-only troop: deliberately absurd stats/gear, not meant to be
+  # balanced. Only ever spawned via the co-op debug menu's "OP troop"
+  # reward (module_coop_scripts.py, multiplayer_campaign_debug_cheat arm)
+  # so a small test party can actually take a castle. Not on any recruit
+  # tree, no faction relevance beyond needing a valid one for the tuple.
+  ["coop_debug_champion","Debug Champion","Debug Champions",tf_mounted|tf_guarantee_boots|tf_guarantee_armor|tf_guarantee_gloves|tf_guarantee_helmet|tf_guarantee_horse|tf_guarantee_shield,0,0,fac_kingdom_1,
+   [itm_heavy_lance,itm_sword_two_handed_b,itm_great_sword,itm_tab_shield_heater_cav_b,
+    itm_plate_armor,itm_plate_boots,itm_great_helmet,itm_charger,itm_gauntlets],
+   str_30 | agi_30 | int_10 | cha_10|level(50),wp(300),knows_common|knows_riding_10|knows_shield_10|knows_ironflesh_10|knows_power_strike_10|knows_athletics_10|knows_power_draw_10|knows_first_aid_10,swadian_face_middle_1, swadian_face_older_2],
   ["swadian_messenger","Swadian Messenger","Swadian Messengers",tf_mounted|tf_guarantee_boots|tf_guarantee_armor|tf_guarantee_gloves|tf_guarantee_horse|tf_guarantee_ranged,0,0,fac_kingdom_1,
    [itm_sword_medieval_a,itm_leather_jerkin,itm_leather_boots,itm_courser,itm_leather_gloves,itm_light_crossbow,itm_bolts],
    str_7 | agi_21 | int_4 | cha_4|level(25),wp(130),knows_common|knows_riding_7|knows_horse_archery_5,swadian_face_young_1, swadian_face_old_2],

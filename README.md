@@ -29,8 +29,13 @@ Co-op campaign mod for Mount & Blade: Warband using WSE2's multiplayer campaign 
 - **Net tuning** — `[NetTuning]` knobs patched into the dedicated exes at startup: raised AIMD congestion floor/step (~10 s recovery instead of ~97 s) and `PacketMaxSize=1200` to fit Steam's real per-packet budget
 - Terrain-appropriate battle scenes (plain/steppe/snow/desert/forest variants)
 - 5-minute autosave on the campaign server
+- **Vassalage** — swear fealty to an NPC kingdom (per-player, independent of every other connected player), receive personal ownership of centers your kingdom captures, get auto-appointed marshal by renown, and ask your liege to declare war. Players can also **found their own kingdom** (a fixed pool of 4 slots) and invite other connected players to join it, with the same fief/marshal/war interop as an NPC kingdom
+- **Settlement management** — an owner (sworn or not) can reinforce or withdraw troops from a captured settlement's garrison, start native construction projects (messenger post, prisoner tower), appoint a cosmetic governor from their own companions, and collects passive tax income from owned centers on a daily tick. Ownership, garrison buildings, and construction progress all **survive a full server restart** (not just per-player character data)
+- **Village raids** — a player at war with a faction can raid one of that faction's villages, not just siege its towns/castles
+- **Lord AI** — enemy lords a player is at war with (kingdom war or a personal siege declaration) now flee when that player's party is stronger, instead of always pursuing regardless of strength
+- **Quests (Tier A)** — 8 native quest types can be accepted, tracked, and actually completed server-side on the dedicated campaign; other quest types are blocked from being offered rather than silently unfinishable
 
-See [docs/INSTALL.md](docs/INSTALL.md) for the player/host install guide, `docs/flows/` for how each core flow works (battle pipeline, siege, XP sync, inventory sync, party-screen sync, Steam tunnel), and `docs/BUILD.md` for the build chain.
+See [docs/INSTALL.md](docs/INSTALL.md) for the player/host install guide, `docs/flows/` for how each core flow works (battle pipeline, siege, XP sync, inventory sync, party-screen sync, vassalage, quests, Steam tunnel), and `docs/BUILD.md` for the build chain.
 
 ## Requirements
 

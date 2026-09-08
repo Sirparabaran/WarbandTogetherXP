@@ -104,6 +104,38 @@ sequenceDiagram
   remove+add yields healthy upgrades). Parked: minor gameplay nuance,
   cheapest to answer in the wave-2 runtime smoke test rather than engine RE.
 
+## Related: tavern mercenary hire "no room" feedback (fixed 2026-09-07)
+
+Not the roster-dismiss/upgrade flow this dossier otherwise covers, but the
+same "checks the wrong party" bug class, found via a user report that
+recruiting from a tavern silently did nothing when their party was full —
+`coop_hire_tavern` (`module_coop_repairs.py`, already correctly
+server-validates `party_get_free_companions_capacity` before accepting a
+hire) was rejecting it correctly, but the client never told the player why.
+
+Root cause: native's own mercenary-hire dialog (`module_dialogs.py`
+~21405-21507, "Tavern Talk (with troops)") already has the exact feedback
+line for this ("I can't lead any more men right now.") — but its
+capacity check reads `party_get_free_companions_capacity(..., "p_main_party")`,
+the native singleplayer singleton, which has no relationship to a coop
+player's actual party. So the dialog's own client-side clamp (`$temp`,
+computed from mercenary count / free capacity / affordable count) was
+computed against the wrong party's capacity, meaning a full coop party
+often still showed `$temp > 0` and let the hire option appear, silently
+failing when the server correctly rejected it, without ever routing to the
+"can't lead any more men" line.
+
+Fixed: all three `party_get_free_companions_capacity` call sites in that
+dialog chain now resolve the coop player's own real party
+(`player_get_party_id(multiplayer_get_my_player())`) instead of
+`p_main_party`, gated the same `game_in_multiplayer_mode` /
+`$g_coop_in_local_visit` way as the existing `coop_queue_tavern_hire`
+redirect a few nodes later in the same chain — native singleplayer is
+unaffected. The gold-affordability clamp in the same node
+(`store_troop_gold ... "trp_player"`) was deliberately left untouched —
+out of scope for this specific report, not confirmed broken. **Not yet
+playtest-confirmed.**
+
 ## Related docs
 
 - `xp-sync.md` — ev 22 upgradeable push and snapshot-slot machinery.

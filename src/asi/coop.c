@@ -92,7 +92,7 @@ static steam_cfg_t g_steam_cfg;
 
 /* Resolved at DLL load from variables.txt; index into g_basicGame.m_globalVariables int64 vector */
 static int  g_encountered_party_idx = -1;
-static int  g_asi_local_battle_idx  = -1;  /* $g_coop_asi_local_battle: set to 1 by module before local fight */
+static int  g_asi_local_battle_idx  = -1;  /* $g_coop_asi_local_battle: set before a local SP mission */
 static int  g_my_steam_acctid_idx   = -1;  /* $g_coop_my_steam_acctid: republished every 500ms by s59_writer_thread */
 static int  g_return_campaign_idx   = -1;  /* $g_coop_return_to_campaign: battle server said "battle over" -- arm the auto-join return hop */
 static int  g_steam_missing_idx     = -1;  /* $g_coop_steam_missing: republished every 500ms; 1 = host/client role can't find Steam (module shows the in-game warning) */
@@ -690,14 +690,14 @@ __declspec(naked) void create_agent_detour(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Option C — metaMission populate for coop local battle             */
+/*  Option C — metaMission populate for a coop local SP mission       */
 /*  See patches/Warband/findings_encounters.md "Option C Impl RE"    */
 /* ------------------------------------------------------------------ */
 
 static DWORD g_sp_trampoline = 0;
 static BYTE  g_sp_saved[16]  = {0};
 
-/* Set by fixup_meta_mission_for_coop when a coop local battle starts.
+/* Set by fixup_meta_mission_for_coop when a coop local SP mission starts.
    The mission_framemove_detour restores gameType on the first frame. */
 static volatile int g_in_coop_local_battle = 0;
 
@@ -709,17 +709,22 @@ static void __cdecl fixup_meta_mission_for_coop(void) {
     if (*(int *)ADDR_MAP_INTERACTION_MODE != 4) return;
 
     /* Only fire if the module explicitly set $g_coop_asi_local_battle = 1
-       right before change_screen_mission in the encounter menu. */
+       right before change_screen_mission.  The legacy global name is kept
+       for module/save compatibility, but it also covers peaceful visits. */
     flag = modglobals_get_int(g_asi_local_battle_idx, 0);
     if (flag != 1) return;
 
     meta = (volatile int *)ADDR_META_MISSION;
-    if (meta[0] != -1) return;  /* already populated */
-
     party_no = modglobals_get_int(g_encountered_party_idx, -1);
     if (party_no < 0) return;
 
-    /* Clear the flag so this only fires once */
+    /* Clear the request so this only fires once.  Do NOT return merely
+       because meta[0] is already populated: WSE2 commonly leaves the prior
+       map encounter there.  That old early-return skipped both the refresh
+       below and g_in_coop_local_battle=1; the permanently opened spawn gate
+       then entered spawnEntryGroups with campaign-client visitor state and
+       crashed at 0x4F8C21 on a null-4 vector access.  An explicit module
+       request always owns and refreshes the complete metaMission record. */
     modglobals_set(g_asi_local_battle_idx, 0);
 
     meta[0] = party_no;                                 /* +0x00 encounteredParties[0] */
@@ -739,7 +744,7 @@ static void __cdecl fixup_meta_mission_for_coop(void) {
        inside the window dispatch, after network listen) and restored
        in the frameMove cleanup (before network send). */
     g_in_coop_local_battle = 1;
-    coop_log("local battle flag set (gameType stays 4 until window dispatch)\n");
+    coop_log("local SP mission flag set (gameType stays 4 until window dispatch)\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -797,7 +802,7 @@ __declspec(naked) void setparams_prologue_detour(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  mission_frameMove — per-frame gameType flip for coop local battles */
+/*  mission_frameMove — per-frame gameType flip for coop local missions */
 /*  Sets gameType=0 during frameMove so all SP subsystems work, then  */
 /*  restores to 4 on return so network listen/send (which run outside */
 /*  frameMove in mbCoreGame::frameMove) see gameType=4.               */

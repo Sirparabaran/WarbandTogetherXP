@@ -350,6 +350,7 @@ coop_server_reduce_damage = (
 #(call_script, "script_crouching_scan"),], [])
 #
 #crouching_triggers = [player_crouch_coop,crouching_command_coop,crouching_scan]
+
 coop_mission_templates = [
     # --- Local SP battle for coop clients ---
     # Uses mtef_visitor_source so troops come from set_visitor() calls,
@@ -696,7 +697,8 @@ coop_mission_templates = [
         (get_max_players, ":num_players"),
         (try_for_range, ":player_no", 1, ":num_players"),
           (player_is_active, ":player_no"),
-          (neg|player_is_busy_with_menus, ":player_no"),
+          # Hydration has already forced the player's campaign troop; do not
+          # let the obsolete selection menu block the explicit spawn.
           (player_slot_eq, ":player_no", slot_player_spawned_this_round, 0),
           # Spawn gate (spec 4a): no spawn until hydration ran (identify or
           # the 5 s fallback) -- hydrate zeroes slot_player_join_time.
@@ -859,6 +861,7 @@ coop_mission_templates = [
 
           (call_script, "script_coop_find_bot_troop_for_spawn", ":selected_team"),
           (assign, ":selected_troop", reg0),
+          (gt, ":selected_troop", 0), # never spawn the trp_player/no-troop sentinel as a bot
 
           (try_begin),
             (eq, ":selected_team", 0),     
@@ -966,6 +969,7 @@ coop_mission_templates = [
       (ti_on_agent_spawn, 0, 0, [],#called by client also
        [
         (store_trigger_param_1, ":agent_no"),
+
         (try_begin),
           (eq, "$coop_battle_started", 0),
           (assign, "$coop_battle_started", 1),
@@ -4919,7 +4923,8 @@ coop_mission_templates = [
         (get_max_players, ":num_players"),
         (try_for_range, ":player_no", 1, ":num_players"),
           (player_is_active, ":player_no"),
-          (neg|player_is_busy_with_menus, ":player_no"),
+          # Hydration has already forced the player's campaign troop; do not
+          # let the obsolete selection menu block the explicit spawn.
           (player_slot_eq, ":player_no", slot_player_spawned_this_round, 0),
           # Spawn gate (spec 4a): no spawn until hydration ran (identify or
           # the 5 s fallback) -- hydrate zeroes slot_player_join_time.
@@ -5061,6 +5066,7 @@ coop_mission_templates = [
           (eq, "$coop_reinforce", 1), #ready for reinforcements
           (call_script, "script_coop_find_bot_troop_for_spawn", ":selected_team"),
           (assign, ":selected_troop", reg0),
+          (gt, ":selected_troop", 0), # never spawn the trp_player/no-troop sentinel as a bot
 #SPAWN POINTS #######################################
 
           (try_begin),
@@ -5100,6 +5106,7 @@ coop_mission_templates = [
       (ti_on_agent_spawn, 0, 0, [],
        [
         (store_trigger_param_1, ":agent_no"),
+
         (try_begin),
           (eq, "$coop_battle_started", 0),
           (assign, "$coop_battle_started", 1),
@@ -5221,6 +5228,7 @@ coop_mission_templates = [
          ]),
 
 
+
       (ti_on_agent_killed_or_wounded, 0, 0, [],
        [
          (store_trigger_param_1, ":dead_agent_no"),
@@ -5300,8 +5308,8 @@ coop_mission_templates = [
               (store_agent_hit_points, ":agent_hit_points", ":cur_agent"),
               (troop_set_health, ":agent_troop_id", ":agent_hit_points"),
 
-              #store items from agents
-              (call_script, "script_coop_player_agent_save_items", ":cur_agent"),
+              # Equipment belongs to the campaign-to-battle snapshot. Do not
+              # overwrite it with this round's transient live agent state.
             (try_end),
 
             (try_begin), #replace reserves count

@@ -205,7 +205,10 @@ multiplayer_event_multiplayer_campaign_server_event_char_sync_packed_skills_a = 
 multiplayer_event_multiplayer_campaign_server_event_char_sync_packed_skills_b = 38
 multiplayer_event_multiplayer_campaign_server_event_char_sync_packed_profs    = 39
 multiplayer_event_multiplayer_campaign_server_event_char_sync_packed_misc     = 40
-# 41 free
+# Campaign map's hardcoded Camp control opens this client menu through the
+# dedicated server (the control starts an encounter with p_camp_bandits).
+multiplayer_event_multiplayer_campaign_server_event_open_debug_camp = 41
+multiplayer_event_multiplayer_campaign_server_event_captivity = 56
 # Local siege: reply to request_siege_local carrying the wall scene id (42)
 multiplayer_event_multiplayer_campaign_server_event_start_siege_local  = 42
 # Companion hero XP push: (hero_troop_id, xp) -- client applies signed delta (43)
@@ -256,6 +259,82 @@ multiplayer_event_multiplayer_campaign_request_siege        = 26
 # Local siege: player assaults the locked center locally vs AI; server replies
 # with start_siege_local (27)
 multiplayer_event_multiplayer_campaign_request_siege_local  = 27
+multiplayer_event_multiplayer_campaign_relation_set          = 28
+multiplayer_event_multiplayer_campaign_quest_start           = 29
+multiplayer_event_multiplayer_campaign_quest_data            = 30
+multiplayer_event_multiplayer_campaign_tavern_hire           = 31
+multiplayer_event_multiplayer_campaign_quest_status           = 32
+multiplayer_event_multiplayer_campaign_quest_aux              = 33
+multiplayer_event_multiplayer_campaign_buy_cattle              = 34
+multiplayer_event_multiplayer_campaign_cattle_command           = 35
+multiplayer_event_multiplayer_campaign_request_hall             = 36
+multiplayer_event_multiplayer_campaign_tournament_result         = 37
+# Client -> campaign server. Debug rewards are server-owned so they persist.
+multiplayer_event_multiplayer_campaign_debug_cheat                = 38
+multiplayer_event_multiplayer_campaign_loot_claim                  = 39
+multiplayer_event_multiplayer_campaign_loot_done                   = 40
+# Vassalage Phase 1: player requests to swear fealty to a kingdom faction
+# (payload: faction id). Server validates and applies; result rides back on
+# the existing packed misc char-sync push (ev 40 server-side / ch125).
+multiplayer_event_multiplayer_campaign_swear_fealty_request         = 41
+# Vassalage Phase 4: vassal asks their own liege to declare war (payload:
+# target faction id). The requester's OWN faction is never taken from the
+# client -- the server resolves it from slot_troop_coop_faction.
+multiplayer_event_multiplayer_campaign_declare_war_request          = 42
+# Vassalage Phase 5: player-founded factions. Founding/leaving apply
+# immediately (like Phase 1 swear-fealty -- no one else is involved).
+# Joining another player's kingdom needs their consent, so it's a
+# request/accept/reject handshake instead (payload: target_player_no for
+# the request; accept/reject carry no payload, the server already knows
+# the pending request from the target's own slot_player_coop_pending_join_from).
+multiplayer_event_multiplayer_campaign_found_kingdom_request  = 43
+multiplayer_event_multiplayer_campaign_leave_faction_request  = 44
+multiplayer_event_multiplayer_campaign_join_faction_request   = 45
+multiplayer_event_multiplayer_campaign_join_faction_accept    = 46
+multiplayer_event_multiplayer_campaign_join_faction_reject    = 47
+# Vassalage Phase 6: settlement management (garrison/tax/construction/
+# governor). High round numbers chosen deliberately to avoid any risk of
+# colliding with the sequential ids above; check_campaign_protocol.py
+# validates there's no actual duplicate within either dispatcher's own
+# namespace.
+multiplayer_event_multiplayer_campaign_request_center_manage_data = 200
+multiplayer_event_multiplayer_campaign_start_construction_request = 201
+multiplayer_event_multiplayer_campaign_withdraw_garrison_request  = 202
+multiplayer_event_multiplayer_campaign_appoint_governor_request   = 203
+multiplayer_event_multiplayer_campaign_reinforce_garrison_request = 204
+multiplayer_event_multiplayer_campaign_server_event_hall_npc    = 53
+multiplayer_event_multiplayer_campaign_server_event_tavern_offer = 54
+multiplayer_event_multiplayer_campaign_server_event_tavern_result = 55
+multiplayer_event_multiplayer_campaign_server_event_world_event = 57
+# Weekly co-op payroll: due, paid, remaining gold.
+multiplayer_event_multiplayer_campaign_server_event_wage_result = 58
+multiplayer_event_multiplayer_campaign_server_event_loot_clear  = 59
+multiplayer_event_multiplayer_campaign_server_event_loot_slot   = 60
+multiplayer_event_multiplayer_campaign_server_event_loot_open   = 61
+multiplayer_event_multiplayer_campaign_server_event_trade_merchant_gold = 62
+# Player-party map icon (walking vs mounted look) -- native computes this
+# every frame from trp_player's horse slot via a trigger that's disabled in
+# multiplayer (module_simple_triggers.py "Updating player icon in every
+# frame"); this event is how the coop server recomputes and pushes it to
+# every connected client instead. See docs/flows/inventory-sync.md.
+multiplayer_event_multiplayer_campaign_server_event_party_set_map_icon = 63
+# Vassalage Phase 6: pushes a settlement-management snapshot to the one
+# requesting player (construction/governor/top-3 garrison stacks) -- center
+# party slots aren't reliably synced to clients (docs/flows/siege.md), so
+# every read for the new manage-settlement menu comes from this push.
+multiplayer_event_multiplayer_campaign_server_event_center_manage_data = 200
+# Separate event (not a second message reusing the same id) for the top-3
+# garrison stacks -- keeps the two pushes unambiguous on the client side
+# without relying on delivery order between two same-id messages.
+multiplayer_event_multiplayer_campaign_server_event_center_manage_garrison = 201
+
+multiplayer_event_multiplayer_campaign_server_event_relation_set = 46
+multiplayer_event_multiplayer_campaign_server_event_quest_start  = 47
+multiplayer_event_multiplayer_campaign_server_event_center_owner = 48
+multiplayer_event_multiplayer_campaign_server_event_quest_target = 49
+multiplayer_event_multiplayer_campaign_server_event_quest_status = 50
+multiplayer_event_multiplayer_campaign_server_event_quest_aux    = 51
+multiplayer_event_multiplayer_campaign_server_event_cattle_result = 52
 
 #multiplayer message types
 multiplayer_message_type_auto_team_balance_done      = 2

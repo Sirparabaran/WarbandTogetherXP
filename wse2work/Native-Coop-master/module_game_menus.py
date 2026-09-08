@@ -532,6 +532,67 @@ game_menus = [
     ]
   ),
 
+  ("coop_quest_log",0,
+   "Co-op Debug / Cheats.^Rewards are issued and saved by the dedicated campaign server.",
+   "none",
+   [],
+   [
+     # The map Reports button is hardcoded to menu index 4. In this module
+     # that index is this menu, so it is the reliable debug entry point.
+     ("coop_report_debug_gold", [], "Add 10,000 denars.",
+       [(multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+           multiplayer_event_multiplayer_campaign_debug_cheat, 1),
+        (jump_to_menu, "mnu_auto_return_to_map")]),
+     ("coop_report_debug_op_troops", [], "Add 5 Debug Champions (deliberately OP troops for testing).",
+       [(multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+           multiplayer_event_multiplayer_campaign_debug_cheat, 2),
+        (jump_to_menu, "mnu_auto_return_to_map")]),
+     ("coop_report_debug_back", [], "Return to the campaign map.",
+       [(jump_to_menu, "mnu_auto_return_to_map")]),
+   ]
+  ),
+
+  ("coop_quest_details",0,
+   "{s10}",
+   "none",
+   [
+     (quest_get_slot, ":giver", "$g_coop_selected_quest", slot_quest_giver_troop),
+     (quest_get_slot, ":giver_center", "$g_coop_selected_quest", slot_quest_giver_center),
+     (quest_get_slot, ":target_center", "$g_coop_selected_quest", slot_quest_target_center),
+     (quest_get_slot, reg5, "$g_coop_selected_quest", slot_quest_target_amount),
+     (try_begin), (gt, ":giver", 0), (str_store_troop_name, s2, ":giver"), (else_try), (str_store_string, s2, "@the quest giver"), (try_end),
+     (try_begin), (party_is_active, ":giver_center"), (str_store_party_name, s3, ":giver_center"), (else_try), (str_store_string, s3, "@the settlement"), (try_end),
+     (try_begin), (party_is_active, ":target_center"), (str_store_party_name, s4, ":target_center"), (else_try), (str_store_string, s4, "@the marked destination"), (try_end),
+     (try_begin),
+       (eq, "$g_coop_selected_quest", "qst_deal_with_looters"),
+       (str_store_string, s1, "@Clear the looters"),
+       (str_store_string, s10, "@{s1}^^Destroy {reg5} looter parties roaming near {s3}, then return to {s2}."),
+     (else_try), (eq, "$g_coop_selected_quest", "qst_track_down_bandits"),
+       (str_store_string, s1, "@Track down the wanted bandits"),
+       (str_store_string, s10, "@{s1}^^Find and defeat the marked bandit party, then report back to {s2} in {s3}."),
+     (else_try), (eq, "$g_coop_selected_quest", "qst_escort_merchant_caravan"),
+       (str_store_string, s1, "@Escort the merchant caravan"),
+       (str_store_string, s10, "@{s1}^^Meet the merchant caravan outside {s3} and escort it safely to {s4}."),
+     (else_try), (eq, "$g_coop_selected_quest", "qst_troublesome_bandits"),
+       (str_store_string, s1, "@Eliminate the troublesome bandits"),
+       (str_store_string, s10, "@{s1}^^Hunt down the marked troublesome bandits near {s3}, then return to {s2}."),
+     (else_try), (eq, "$g_coop_selected_quest", "qst_kidnapped_girl"),
+       (str_store_string, s1, "@Rescue the kidnapped girl"),
+       (str_store_string, s10, "@{s1}^^Meet the ransom bandits near {s4}, rescue the kidnapped girl, and bring her back to {s3}. The ransom is {reg5} denars."),
+     (else_try), (eq, "$g_coop_selected_quest", "qst_move_cattle_herd"),
+       (str_store_string, s1, "@Drive the cattle herd"),
+       (str_store_string, s10, "@{s1}^^Drive the quest cattle herd from {s3} to {s4}, then return to the guild master."),
+     (else_try), (eq, "$g_coop_selected_quest", "qst_deliver_cattle"),
+       (str_store_string, s1, "@Bring cattle to the village"),
+       (str_store_string, s10, "@{s1}^^Bring {reg5} heads of cattle to the village of {s4} and speak with its elder."),
+     (else_try),
+       (str_store_string, s1, "@Active quest"),
+       (str_store_string, s10, "@{s1}^^Return to {s2} in {s3} for details about this quest."),
+     (try_end),
+   ],
+   [("coop_quest_details_back", [], "Back to the quest log.", [(jump_to_menu, "mnu_coop_quest_log")])]
+  ),
+
   ("reports",0,
    "Character Renown: {reg5}^Honor Rating: {reg6}^Party Morale: {reg8}^Party Size Limit: {reg7}^",
    "none",
@@ -546,6 +607,11 @@ game_menus = [
     (party_get_morale, reg8, "p_main_party"),
    ],
     [
+      # The map Reports control opens this menu reliably in campaign mode;
+      # use it as the debug entry point while the hardcoded Camp control is
+      # unavailable to multiplayer clients.
+      ("coop_reports_debug_cheats", [], "Co-op Debug / Cheats.",
+       [(jump_to_menu, "mnu_coop_debug_cheats")]),
       ("cheat_faction_orders",[(ge,"$cheat_mode",1)],"{!}Cheat: Faction orders.",
        [(jump_to_menu, "mnu_faction_orders"),
         ]
@@ -3036,7 +3102,14 @@ game_menus = [
            (rest_for_hours_interactive, 24 * 365, 5, 1), #rest while attackable
                       
            (change_screen_return),
-        ]
+       ]
+       ),
+      # This is intentionally separate from Native's $cheat_mode menu.
+      # Its actions are sent to the campaign server, where they are saved
+      # against the player's co-op character and party.
+      ("coop_debug_cheats",
+       [], "Co-op Debug / Cheats.",
+       [(jump_to_menu, "mnu_coop_debug_cheats")],
        ),
       ("camp_cheat",
        [(ge, "$cheat_mode", 1)
@@ -3050,6 +3123,70 @@ game_menus = [
         ]
        ),
       ]
+  ),
+  ("coop_debug_cheats",0,
+   "Co-op debug rewards. All changes are applied and saved by the campaign server.",
+   "none",
+   [],
+   [
+      ("coop_debug_gold", [], "Add 10,000 denars.",
+       [(multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+           multiplayer_event_multiplayer_campaign_debug_cheat, 1),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_op_troops", [], "Add 5 Debug Champions (deliberately OP troops for testing).",
+       [(multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+           multiplayer_event_multiplayer_campaign_debug_cheat, 2),
+        (jump_to_menu, "mnu_camp")]),
+      # Vassalage Phase 5: player-founded factions. Found/leave apply
+      # immediately (no one else involved); join-request needs the
+      # target's consent, resolved via the accept/reject buttons below.
+      ("coop_debug_found_kingdom", [], "Found your own Kingdom.",
+       [(call_script, "script_coop_queue_found_kingdom"),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_leave_faction", [], "Leave/Disband my Kingdom.",
+       [(call_script, "script_coop_queue_leave_faction"),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_join_request_1", [
+          (multiplayer_get_my_player, ":my_player"),
+          (neq, ":my_player", 1),
+          (player_is_active, 1),
+          (str_store_player_username, s1, 1),
+       ], "Request to join {s1}'s Kingdom.",
+       [(call_script, "script_coop_queue_join_faction_request", 1),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_join_request_2", [
+          (multiplayer_get_my_player, ":my_player"),
+          (neq, ":my_player", 2),
+          (player_is_active, 2),
+          (str_store_player_username, s1, 2),
+       ], "Request to join {s1}'s Kingdom.",
+       [(call_script, "script_coop_queue_join_faction_request", 2),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_join_request_3", [
+          (multiplayer_get_my_player, ":my_player"),
+          (neq, ":my_player", 3),
+          (player_is_active, 3),
+          (str_store_player_username, s1, 3),
+       ], "Request to join {s1}'s Kingdom.",
+       [(call_script, "script_coop_queue_join_faction_request", 3),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_join_request_4", [
+          (multiplayer_get_my_player, ":my_player"),
+          (neq, ":my_player", 4),
+          (player_is_active, 4),
+          (str_store_player_username, s1, 4),
+       ], "Request to join {s1}'s Kingdom.",
+       [(call_script, "script_coop_queue_join_faction_request", 4),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_join_accept", [], "Accept pending kingdom invite.",
+       [(call_script, "script_coop_queue_join_faction_accept"),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_join_reject", [], "Reject pending kingdom invite.",
+       [(call_script, "script_coop_queue_join_faction_reject"),
+        (jump_to_menu, "mnu_camp")]),
+      ("coop_debug_back", [], "Back.",
+       [(jump_to_menu, "mnu_camp")]),
+   ]
   ),
   ("camp_cheat",0,
    "Select a cheat:",
@@ -3540,16 +3677,28 @@ game_menus = [
     [
       ("cattle_drive_away",[],"Drive the cattle onward.",
        [
+        (try_begin),
+        (game_in_multiplayer_mode),
+        (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+          multiplayer_event_multiplayer_campaign_cattle_command, "$g_encountered_party", 1),
+        (else_try),
         (party_set_slot, "$g_encountered_party", slot_cattle_driven_by_player, 1),
         (party_set_ai_behavior, "$g_encountered_party", ai_bhvr_driven_by_party),
         (party_set_ai_object,"$g_encountered_party", "p_main_party"),
+        (try_end),
         (change_screen_return),
         ]
        ),
       ("cattle_stop",[],"Bring the herd to a stop.",
        [
+        (try_begin),
+        (game_in_multiplayer_mode),
+        (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+          multiplayer_event_multiplayer_campaign_cattle_command, "$g_encountered_party", 0),
+        (else_try),
         (party_set_slot, "$g_encountered_party", slot_cattle_driven_by_player, 0),
         (party_set_ai_behavior, "$g_encountered_party", ai_bhvr_hold),
+        (try_end),
         (change_screen_return),
         ]
        ),
@@ -3564,7 +3713,12 @@ game_menus = [
         ]
        ),
       ("leave",[],"Leave.",
-       [(change_screen_return),
+       [(try_begin),
+          (game_in_multiplayer_mode),
+          (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+            multiplayer_event_multiplayer_campaign_cattle_command, "$g_encountered_party", 2),
+        (try_end),
+        (change_screen_return),
         ]
        ),
       ]
@@ -8063,6 +8217,183 @@ game_menus = [
     ],
   ),
 
+  # Vassalage Phase 6 -- co-op settlement management. Fully parallel to the
+  # native menus above (never reused/re-gated -- see docs/flows/vassalage.md
+  # Phase 6 for why). Every field here is fed by an explicit server push
+  # ($g_coop_center_manage_*, module_coop_scripts.py coop_send_center_manage_data)
+  # rather than a local party-slot read, since center party slots are not
+  # reliably synced to clients (docs/flows/siege.md).
+  (
+    "coop_manage_settlement",0,
+    "{s20}",
+    "none",
+    [
+      (str_clear, s20),
+      (try_begin),
+          (gt, "$g_coop_center_manage_construction", 0),
+          (call_script, "script_get_improvement_details", "$g_coop_center_manage_construction"),
+          (str_store_string, s21, s0),
+          (store_div, ":days_left", "$g_coop_center_manage_hours_left", 24),
+          (val_add, ":days_left", 1),
+          (assign, reg5, ":days_left"),
+          (str_store_string, s20, "@Currently building: {s21} ({reg5} day(s) left).^"),
+      (else_try),
+          (str_store_string, s20, "@No construction in progress.^"),
+      (try_end),
+      (try_begin),
+          (gt, "$g_coop_center_manage_governor_troop", 0),
+          (str_store_troop_name, s22, "$g_coop_center_manage_governor_troop"),
+          (str_store_string, s20, "@{s20}Governor: {s22}."),
+      (else_try),
+          (str_store_string, s20, "@{s20}No governor appointed."),
+      (try_end),
+    ],
+    [
+      ("coop_manage_construction_open",[],"Construction...",
+       [(jump_to_menu, "mnu_coop_manage_construction")]),
+      ("coop_manage_garrison_open",[],"Garrison...",
+       [(jump_to_menu, "mnu_coop_manage_garrison")]),
+      ("coop_manage_governor_open",[],"Appoint governor...",
+       [(jump_to_menu, "mnu_coop_manage_governor")]),
+      # Fixed 2026-09-08: used to jump to "mnu_town" -- a leftover from
+      # before this menu's entry point moved to mnu_coop_center_encounter
+      # (mnu_town is dead/unreachable in real coop play and throws "Invalid
+      # Party ID: -100000" errors when its own conditions get evaluated).
+      ("coop_manage_settlement_back",[],"Back.",
+       [(jump_to_menu, "mnu_coop_center_encounter")]),
+    ],
+  ),
+
+  (
+    "coop_manage_construction",0,
+    "Choose a construction project.",
+    "none",
+    [],
+    [
+      # Deliberately does not locally check "already has this improvement"
+      # -- center slots aren't reliably client-synced, so this always shows
+      # when no project is in progress (known from the pushed snapshot) and
+      # relies on the server to reject an already-built one; a harmless
+      # wasted click in that case, never a correctness issue.
+      ("coop_build_messenger_post",
+       [(eq, "$g_coop_center_manage_construction", 0)],
+       "Build a messenger post.",
+       [(call_script, "script_coop_queue_start_construction", "$g_coop_manage_center", slot_center_has_messenger_post),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_build_prisoner_tower",
+       [(eq, "$g_coop_center_manage_construction", 0)],
+       "Build a prisoner tower.",
+       [(call_script, "script_coop_queue_start_construction", "$g_coop_manage_center", slot_center_has_prisoner_tower),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_build_back",[],"Back.",
+       [(jump_to_menu, "mnu_coop_manage_settlement")]),
+    ],
+  ),
+
+  (
+    "coop_manage_garrison",0,
+    "{s23}",
+    "none",
+    [
+      (str_clear, s23),
+      (try_begin),
+          (gt, "$g_coop_center_manage_stack0_troop", 0),
+          (str_store_troop_name, s24, "$g_coop_center_manage_stack0_troop"),
+          (assign, reg6, "$g_coop_center_manage_stack0_count"),
+          (str_store_string, s23, "@Garrison: {s24} x{reg6}"),
+      (try_end),
+      (try_begin),
+          (gt, "$g_coop_center_manage_stack1_troop", 0),
+          (str_store_troop_name, s25, "$g_coop_center_manage_stack1_troop"),
+          (assign, reg7, "$g_coop_center_manage_stack1_count"),
+          (str_store_string, s23, "@{s23}, {s25} x{reg7}"),
+      (try_end),
+      (try_begin),
+          (gt, "$g_coop_center_manage_stack2_troop", 0),
+          (str_store_troop_name, s26, "$g_coop_center_manage_stack2_troop"),
+          (assign, reg8, "$g_coop_center_manage_stack2_count"),
+          (str_store_string, s23, "@{s23}, {s26} x{reg8}"),
+      (try_end),
+    ],
+    [
+      ("coop_garrison_reinforce",[],"Reinforce garrison (up to 5, from available volunteers).",
+       [(call_script, "script_coop_queue_reinforce_garrison", "$g_coop_manage_center", 5),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_withdraw_0",
+       [(gt, "$g_coop_center_manage_stack0_troop", 0),
+        (str_store_troop_name, s27, "$g_coop_center_manage_stack0_troop")],
+       "Withdraw {s27}.",
+       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", 0),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_withdraw_1",
+       [(gt, "$g_coop_center_manage_stack1_troop", 0),
+        (str_store_troop_name, s27, "$g_coop_center_manage_stack1_troop")],
+       "Withdraw {s27}.",
+       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", 1),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_withdraw_2",
+       [(gt, "$g_coop_center_manage_stack2_troop", 0),
+        (str_store_troop_name, s27, "$g_coop_center_manage_stack2_troop")],
+       "Withdraw {s27}.",
+       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", 2),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_back",[],"Back.",
+       [(jump_to_menu, "mnu_coop_manage_settlement")]),
+    ],
+  ),
+
+  (
+    "coop_manage_governor",0,
+    "Choose a companion to appoint as governor.",
+    "none",
+    [],
+    [
+      ("coop_governor_pick_0",
+       [(call_script, "script_coop_client_get_nth_companion", 0), (gt, reg0, 0), (str_store_troop_name, s28, reg0)],
+       "{s28}",
+       [(call_script, "script_coop_client_get_nth_companion", 0),
+        (call_script, "script_coop_queue_appoint_governor", "$g_coop_manage_center", reg0),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_governor_pick_1",
+       [(call_script, "script_coop_client_get_nth_companion", 1), (gt, reg0, 0), (str_store_troop_name, s28, reg0)],
+       "{s28}",
+       [(call_script, "script_coop_client_get_nth_companion", 1),
+        (call_script, "script_coop_queue_appoint_governor", "$g_coop_manage_center", reg0),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_governor_pick_2",
+       [(call_script, "script_coop_client_get_nth_companion", 2), (gt, reg0, 0), (str_store_troop_name, s28, reg0)],
+       "{s28}",
+       [(call_script, "script_coop_client_get_nth_companion", 2),
+        (call_script, "script_coop_queue_appoint_governor", "$g_coop_manage_center", reg0),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_governor_pick_3",
+       [(call_script, "script_coop_client_get_nth_companion", 3), (gt, reg0, 0), (str_store_troop_name, s28, reg0)],
+       "{s28}",
+       [(call_script, "script_coop_client_get_nth_companion", 3),
+        (call_script, "script_coop_queue_appoint_governor", "$g_coop_manage_center", reg0),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_governor_pick_4",
+       [(call_script, "script_coop_client_get_nth_companion", 4), (gt, reg0, 0), (str_store_troop_name, s28, reg0)],
+       "{s28}",
+       [(call_script, "script_coop_client_get_nth_companion", 4),
+        (call_script, "script_coop_queue_appoint_governor", "$g_coop_manage_center", reg0),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_governor_pick_5",
+       [(call_script, "script_coop_client_get_nth_companion", 5), (gt, reg0, 0), (str_store_troop_name, s28, reg0)],
+       "{s28}",
+       [(call_script, "script_coop_client_get_nth_companion", 5),
+        (call_script, "script_coop_queue_appoint_governor", "$g_coop_manage_center", reg0),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_governor_clear",
+       [(gt, "$g_coop_center_manage_governor_troop", 0)],
+       "Remove the current governor.",
+       [(call_script, "script_coop_queue_appoint_governor", "$g_coop_manage_center", -1),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_governor_back",[],"Back.",
+       [(jump_to_menu, "mnu_coop_manage_settlement")]),
+    ],
+  ),
+
   (
     "town_bandits_failed",mnf_disable_all_keys,
     "{s4} {s5}",
@@ -8317,6 +8648,11 @@ game_menus = [
           (try_end),
           (call_script, "script_calculate_battle_advantage"),
           (set_battle_advantage, reg0),
+          # The campaign client inherits the small multiplayer battle-size
+          # setting (often spawning only four enemies). Local SP fights must
+          # use the full Native battle-size budget so the enemy party can
+          # reinforce normally.
+          (options_set_battle_size, 420),
           (set_party_battle_mode),
           (assign, "$g_battle_result", 0),
           (assign, "$g_village_raid_evil", 1),
@@ -9615,7 +9951,22 @@ game_menus = [
            (assign, "$g_next_menu", "mnu_town"),
            (jump_to_menu, "mnu_center_manage"),
        ]),
-		
+
+      # Vassalage Phase 6: was added here (native's own mnu_town) as a
+      # parallel coop-safe entry point beside walled_center_manage above.
+      # Removed 2026-09-08: confirmed dead code (dedicated coop settlement
+      # visits route entirely through mnu_coop_center_encounter instead --
+      # mnu_town is never actually opened) AND confirmed actively harmful:
+      # this menu's conditions get evaluated with $current_town == -100000
+      # (a sentinel, not a real party) in some background/hot-key pass even
+      # when the player isn't in a real town, throwing "SCRIPT ERROR:
+      # Invalid Party ID: -100000" for every item that touches $current_town
+      # in a party op -- native's own items here already do this
+      # (harmlessly, apparently tolerated), but this item additionally spammed
+      # a full failing script call (coop_is_center_owner) into that noise.
+      # The real, reachable entry point is in mnu_coop_center_encounter
+      # (module_game_menus.py, "coop_manage_settlement_entry").
+
       ("walled_center_move_court",
       [
         (neg|party_slot_eq, "$current_town", slot_village_state, svs_under_siege),
@@ -10030,6 +10381,9 @@ game_menus = [
 			(str_store_string, s8, "str_s8_you_are_also_invited_to_attend_the_ongoing_feast_in_the_castle"),
 		(try_end),
         (troop_add_gold, "trp_player", ":total_win"),
+        # Mirror Native's final tournament rewards on the campaign server.
+        (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+            multiplayer_event_multiplayer_campaign_tournament_result, 200, "$g_tournament_bet_win_amount", 20),
         (assign, ":player_odds_sub", 0),
         (store_div, ":player_odds_sub", "$g_tournament_bet_win_amount", 5),
         (party_get_slot, ":player_odds", "$current_town", slot_town_player_odds),
@@ -14517,8 +14871,71 @@ game_menus = [
     [
         (set_background_mesh, "mesh_pic_bandits"),
         (assign, reg11, "$g_encounter_enemy_count"),
+        (assign, "$g_coop_cattle_encounter_party", -1),
+        (try_begin),
+          (gt, "$g_encountered_party", 0),
+          (party_is_active, "$g_encountered_party"),
+          # Party slots may be absent on the client. The replicated roster
+          # also identifies a cattle-only herd, including existing herds.
+          (party_count_members_of_type, ":cattle_count", "$g_encountered_party", "trp_cattle"),
+          (party_get_num_companions, ":herd_size", "$g_encountered_party"),
+          (try_begin),
+            (party_slot_eq, "$g_encountered_party", slot_party_type, spt_cattle_herd),
+            (assign, "$g_coop_cattle_encounter_party", "$g_encountered_party"),
+          (else_try),
+            (gt, ":cattle_count", 0),
+            (eq, ":cattle_count", ":herd_size"),
+            (assign, "$g_coop_cattle_encounter_party", "$g_encountered_party"),
+          (try_end),
+        (try_end),
     ],
     [
+      ("encounter_ride_cattle",
+      [
+          (gt, "$g_coop_cattle_encounter_party", 0),
+          (party_is_active, "$g_coop_cattle_encounter_party"),
+      ],
+      "Ride the herd.",
+      [
+          (assign, "$g_encountered_party", "$g_coop_cattle_encounter_party"),
+          (jump_to_menu, "mnu_cattle_herd"),
+      ]),
+
+      ("encounter_talk_sp",
+      [
+          (gt, "$g_encountered_party", 0),
+          (party_is_active, "$g_encountered_party"),
+          (eq, "$g_coop_cattle_encounter_party", -1),
+          (party_get_num_companion_stacks, ":num_stacks", "$g_encountered_party"),
+          (gt, ":num_stacks", 0),
+      ],
+      "Talk to them.",
+      [
+          # Prepare Native's complete map-conversation mission. Calling
+          # start_map_conversation directly enters the event_triggered state
+          # and falls through to "talking to myself" because no two-agent
+          # meeting scene was constructed.
+          (assign, "$g_coop_map_talk_pending", 1),
+          (party_stack_get_troop_id, ":talk_troop", "$g_encountered_party", 0),
+          (party_stack_get_troop_dna, ":talk_dna", "$g_encountered_party", 0),
+          # Native setup_party_meeting initializes these conversation globals
+          # before opening the dialogue. Villager encounters use them for the
+          # correct start dialog and quest branches.
+          (assign, "$g_talk_troop", ":talk_troop"),
+          (party_get_slot, "$g_talk_troop_relation", "$g_encountered_party", slot_center_player_relation),
+          (call_script, "script_get_meeting_scene"),
+          (assign, ":meeting_scene", reg0),
+          (modify_visitors_at_site, ":meeting_scene"),
+          (reset_visitors),
+          (set_visitor, 0, "$g_coop_local_player_troop"),
+          (set_visitor, 17, ":talk_troop", ":talk_dna"),
+          (set_jump_mission, "mt_conversation_encounter"),
+          (jump_to_scene, ":meeting_scene"),
+          (assign, "$talk_context", tc_party_encounter),
+          (assign, "$g_coop_asi_local_battle", 1),
+          (change_screen_map_conversation, ":talk_troop"),
+      ]),
+
       # One dedicated-battle entry only: a second "Charge the enemy!" option
       # used to send the same start_battle event WITHOUT arming
       # $g_coop_battle_requested, so the ev-10 reply landed in the
@@ -14540,6 +14957,9 @@ game_menus = [
       # --- Local SP battle: read party data directly, launch immediately ---
       ("encounter_fight_sp",
       [
+          # Disabled: entering an SP mission disconnects/rebuilds the
+          # campaign character and can reopen character creation.
+          (eq, 1, 0),
       ],
       "Fight locally (Singleplayer).",
       [
@@ -14647,6 +15067,27 @@ game_menus = [
         (try_end),
     ],
     [
+      # Vassalage Phase 6 -- fixed 2026-09-08: this button was originally
+      # added to native's own mnu_town (walled_center_manage's sibling),
+      # which dedicated coop players never actually see -- settlement visits
+      # route entirely through this parallel mnu_coop_center_encounter menu
+      # instead (confirmed: this menu already has its own marketplace/
+      # recruit/tavern items rather than deferring to native's). The
+      # trp_player-gated native item is left in place (harmless, and
+      # reachable if a later local-visit scene ever opens native's own
+      # town menu), but THIS is the one coop players actually reach first.
+      ("coop_manage_settlement_entry",
+      [
+          (call_script, "script_coop_is_center_owner", "$g_coop_center_party"),
+          (eq, reg0, 1),
+      ],
+      "Manage settlement (co-op).",
+      [
+          (assign, "$g_coop_manage_center", "$g_coop_center_party"),
+          (call_script, "script_coop_queue_request_center_manage_data", "$g_coop_center_party"),
+          (jump_to_menu, "mnu_coop_manage_settlement"),
+      ]),
+
       ("coop_center_marketplace",
       [
           (eq, "$g_coop_center_type", coop_center_type_town),
@@ -14654,6 +15095,29 @@ game_menus = [
       "Go to the marketplace.",
       [
           (jump_to_menu, "mnu_coop_town_trade"),
+      ]),
+
+      # Use Native's tournament/arena menus and arena scenes. The campaign
+      # client already has the town arena scene set by the server; keeping
+      # this entry local avoids sending a fake town visit to the campaign.
+      ("coop_center_tournament",
+      [
+          (eq, "$g_coop_center_type", coop_center_type_town),
+          (neg|is_currently_night),
+          (party_slot_ge, "$g_coop_center_party", slot_town_has_tournament, 1),
+      ],
+      "Join the tournament.",
+      [
+          (assign, "$current_town", "$g_coop_center_party"),
+          (call_script, "script_fill_tournament_participants_troop", "$current_town", 1),
+          (assign, "$g_tournament_cur_tier", 0),
+          (assign, "$g_tournament_player_team_won", -1),
+          (assign, "$g_tournament_bet_placed", 0),
+          (assign, "$g_tournament_bet_win_amount", 0),
+          (assign, "$g_tournament_last_bet_tier", -1),
+          (assign, "$g_tournament_next_num_teams", 0),
+          (assign, "$g_tournament_next_team_size", 0),
+          (jump_to_menu, "mnu_town_tournament"),
       ]),
 
       ("coop_center_recruit",
@@ -14678,7 +15142,110 @@ game_menus = [
               multiplayer_event_multiplayer_campaign_request_trade, coop_merchant_type_village_elder),
       ]),
 
+      ("coop_center_buy_cattle",
+      [
+          (eq, "$g_coop_center_type", coop_center_type_village),
+      ],
+      "Buy cattle from the village elder.",
+      [
+          # Cattle purchases are validated and charged by the campaign server.
+          # Do not enter Native's village dialogue here: it reads trp_player,
+          # which is only a placeholder on a co-op client.
+          (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_buy_cattle, "$g_coop_center_party", 1, 0),
+      ]),
+
       # --- Local SP center visit: use server-sent scene_id, launch immediately ---
+      ("coop_center_visit_tavern",
+      [
+          (eq, "$g_coop_center_type", coop_center_type_town),
+      ],
+      "Visit the tavern.",
+      [
+          (multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_start_local_visit, coop_center_type_town),
+          (assign, "$g_coop_in_local_visit", 1),
+          (assign, "$g_mt_mode", tcm_default),
+          (assign, "$talk_context", tc_tavern_talk),
+          (assign, "$current_town", "$g_coop_center_party"),
+          (assign, "$g_encountered_party", "$g_coop_center_party"),
+          (assign, "$town_entered", 1),
+          (call_script, "script_initialize_tavern_variables"),
+
+          # Town scenes and permanent staff are parallel contiguous blocks in
+          # Native. Derive them locally; campaign party slots are server-side.
+          (store_sub, ":center_offset", "$g_coop_center_party", towns_begin),
+          (store_add, ":tavern_scene", "scn_town_1_tavern", ":center_offset"),
+          (modify_visitors_at_site, ":tavern_scene"),
+          (reset_visitors),
+          (set_visitor, 0, "$g_coop_local_player_troop"),
+
+          # Native tavern dialogue hard-codes trp_player for affordability and
+          # payment, while co-op uses a dedicated replicated character troop.
+          # Mirror gold into the placeholder for the duration of this visit.
+          (store_troop_gold, ":coop_gold", "$g_coop_local_player_troop"),
+          (store_troop_gold, ":placeholder_gold", "trp_player"),
+          (try_begin),
+              (gt, ":placeholder_gold", 0),
+              (troop_remove_gold, "trp_player", ":placeholder_gold"),
+          (try_end),
+          (troop_add_gold, "trp_player", ":coop_gold"),
+          (assign, "$g_coop_tavern_active", 1),
+
+          (store_add, ":tavernkeeper", tavernkeepers_begin, ":center_offset"),
+          (party_set_slot, "$g_coop_center_party", slot_town_tavernkeeper, ":tavernkeeper"),
+          (set_visitor, 9, ":tavernkeeper"),
+          (assign, ":cur_entry", 17),
+
+          # The server sends the real offer before the settlement menu opens.
+          (party_get_slot, ":mercenary", "$g_coop_center_party", slot_center_mercenary_troop_type),
+          (party_get_slot, ":mercenary_amount", "$g_coop_center_party", slot_center_mercenary_troop_amount),
+          (try_begin),
+              (gt, ":mercenary_amount", 0),
+              (is_between, ":mercenary", mercenary_troops_begin, mercenary_troops_end),
+              (set_visitor, ":cur_entry", ":mercenary"),
+              (val_add, ":cur_entry", 1),
+          (try_end),
+
+          # Stable specialists provide their ordinary Native conversations:
+          # prisoner sales, realm information, books, and minstrel services.
+          (store_sub, ":range_count", ransom_brokers_end, ransom_brokers_begin),
+          (store_mod, ":npc_offset", ":center_offset", ":range_count"),
+          (store_add, ":npc", ransom_brokers_begin, ":npc_offset"),
+          (set_visitor, ":cur_entry", ":npc"),
+          (val_add, ":cur_entry", 1),
+          (store_sub, ":range_count", tavern_travelers_end, tavern_travelers_begin),
+          (store_mod, ":npc_offset", ":center_offset", ":range_count"),
+          (store_add, ":npc", tavern_travelers_begin, ":npc_offset"),
+          (set_visitor, ":cur_entry", ":npc"),
+          (val_add, ":cur_entry", 1),
+          (store_sub, ":range_count", tavern_booksellers_end, tavern_booksellers_begin),
+          (store_mod, ":npc_offset", ":center_offset", ":range_count"),
+          (store_add, ":npc", tavern_booksellers_begin, ":npc_offset"),
+          (set_visitor, ":cur_entry", ":npc"),
+          (val_add, ":cur_entry", 1),
+          (store_sub, ":range_count", tavern_minstrels_end, tavern_minstrels_begin),
+          (store_mod, ":npc_offset", ":center_offset", ":range_count"),
+          (store_add, ":npc", tavern_minstrels_begin, ":npc_offset"),
+          (set_visitor, ":cur_entry", ":npc"),
+          (val_add, ":cur_entry", 1),
+
+          # Preserve Native companion placement when those troop slots are
+          # available on the client.
+          (try_for_range, ":companion", companions_begin, companions_end),
+              (troop_slot_eq, ":companion", slot_troop_occupation, 0),
+              (troop_slot_eq, ":companion", slot_troop_cur_center, "$g_coop_center_party"),
+              (set_visitor, ":cur_entry", ":companion"),
+              (val_add, ":cur_entry", 1),
+          (try_end),
+
+          (set_jump_mission, "mt_town_default"),
+          (mission_tpl_entry_set_override_flags, "mt_town_default", 0, af_override_horse),
+          (jump_to_scene, ":tavern_scene"),
+          (assign, "$g_coop_asi_local_battle", 1),
+          (change_screen_mission),
+      ]),
+
       ("coop_center_visit_town",
       [
           (eq, "$g_coop_center_type", coop_center_type_town),
@@ -14697,33 +15264,81 @@ game_menus = [
           (modify_visitors_at_site, "$g_coop_center_scene"),
           (reset_visitors),
           # Place player at entry 0 (mtef_scene_source reads from visitor array)
-          (multiplayer_get_my_player, ":my_player"),
-          (player_get_troop_id, ":my_troop", ":my_player"),
-          (set_visitor, 0, ":my_troop"),
-          # NPCs -- try reading from party slots (may work), fall back gracefully
+          (set_visitor, 0, "$g_coop_local_player_troop"),
+          # Center party slots are server-side and are not replicated to a
+          # campaign client. Native's center-specific NPC troop blocks are
+          # contiguous, so derive them from the town index instead.
+          (store_sub, ":center_offset", "$g_coop_center_party", towns_begin),
+          (store_faction_of_party, ":center_faction", "$g_coop_center_party"),
           (try_begin),
-              (party_get_slot, ":npc", "$g_coop_center_party", slot_town_armorer),
-              (gt, ":npc", 0),
-              (set_visitor, 9, ":npc"),
+              (neg|is_between, ":center_faction", kingdoms_begin, kingdoms_end),
+              (assign, ":center_faction", "fac_kingdom_1"),
           (try_end),
-          (try_begin),
-              (party_get_slot, ":npc", "$g_coop_center_party", slot_town_weaponsmith),
-              (gt, ":npc", 0),
-              (set_visitor, 10, ":npc"),
-          (try_end),
-          (try_begin),
-              (party_get_slot, ":npc", "$g_coop_center_party", slot_town_elder),
-              (gt, ":npc", 0),
-              (set_visitor, 11, ":npc"),
-          (try_end),
-          (try_begin),
-              (party_get_slot, ":npc", "$g_coop_center_party", slot_town_horse_merchant),
-              (gt, ":npc", 0),
-              (set_visitor, 12, ":npc"),
+          (reset_item_probabilities, 100),
+          (set_merchandise_modifier_quality, 150),
+          (store_add, ":npc", armor_merchants_begin, ":center_offset"),
+          (set_visitor, 9, ":npc"),
+          # Dialogue trading targets the actual local NPC troop rather than
+          # trp_find_item_cheat. Campaign clients do not receive merchant
+          # inventories, so give the scene copies Native-style local stock.
+          (troop_clear_inventory, ":npc"),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_body_armor, 16),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_head_armor, 16),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_foot_armor, 8),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_hand_armor, 4),
+          (troop_ensure_inventory_space, ":npc", 30),
+          (troop_sort_inventory, ":npc"),
+          (store_add, ":npc", weapon_merchants_begin, ":center_offset"),
+          (set_visitor, 10, ":npc"),
+          (troop_clear_inventory, ":npc"),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_one_handed_wpn, 5),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_two_handed_wpn, 5),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_polearm, 5),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_shield, 6),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_bow, 4),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_crossbow, 3),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_thrown, 5),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_arrows, 2),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_bolts, 2),
+          (troop_ensure_inventory_space, ":npc", 30),
+          (troop_sort_inventory, ":npc"),
+          (store_add, ":npc", mayors_begin, ":center_offset"),
+          (set_visitor, 11, ":npc"),
+          (store_add, ":npc", horse_merchants_begin, ":center_offset"),
+          (set_visitor, 12, ":npc"),
+          (troop_clear_inventory, ":npc"),
+          (troop_add_merchandise_with_faction, ":npc", ":center_faction", itp_type_horse, 5),
+          (troop_ensure_inventory_space, ":npc", 65),
+          (troop_sort_inventory, ":npc"),
+          # Supply ambient citizens without relying on unsynchronised walker slots.
+          (try_for_range, ":walker", 0, num_town_walkers),
+              (store_add, ":entry_no", town_walker_entries_start, ":walker"),
+              (store_mod, ":walker_kind", ":walker", 2),
+              (store_add, ":walker_troop", town_walkers_begin, ":walker_kind"),
+              (set_visitor, ":entry_no", ":walker_troop"),
           (try_end),
           (set_jump_mission, "mt_town_center"),
           (jump_to_scene, "$g_coop_center_scene"),
+          # Tell the client ASI to run this mission with SP agent control/AI.
+          # Without this, campaign-client game type 4 leaves the spawned
+          # player network-controlled (T-pose/immobile) and suppresses NPCs.
+          (assign, "$g_coop_asi_local_battle", 1),
           (change_screen_mission),
+      ]),
+
+      ("coop_center_visit_lords_hall",
+      [
+          (this_or_next|eq, "$g_coop_center_type", coop_center_type_town),
+          (eq, "$g_coop_center_type", coop_center_type_castle),
+      ],
+      "Enter the Lord's Hall.",
+      [
+          (assign, "$g_coop_hall_request_center", "$g_coop_center_party"),
+          (assign, "$g_coop_hall_pending", 1),
+          (troop_set_slot, "trp_temp_array_c", slot_coop_local_visit_npc_count, 0),
+          (multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_request_hall, "$g_coop_center_party"),
+          (jump_to_menu, "mnu_coop_hall_wait"),
       ]),
 
       ("coop_center_visit_village",
@@ -14742,16 +15357,36 @@ game_menus = [
           (modify_visitors_at_site, "$g_coop_center_scene"),
           (reset_visitors),
           # Place player at entry 0
-          (multiplayer_get_my_player, ":my_player"),
-          (player_get_troop_id, ":my_troop", ":my_player"),
-          (set_visitor, 0, ":my_troop"),
+          (set_visitor, 0, "$g_coop_local_player_troop"),
+          (store_sub, ":center_offset", "$g_coop_center_party", villages_begin),
+          (store_add, ":npc", village_elders_begin, ":center_offset"),
+          (set_visitor, 11, ":npc"),
+          # Native places the fugitive in the village center only while the
+          # hunt quest is active and it is daytime. Recreate that visitor in
+          # the co-op local scene so the normal Native dialogue is reachable.
           (try_begin),
-              (party_get_slot, ":npc", "$g_coop_center_party", slot_town_elder),
-              (gt, ":npc", 0),
-              (set_visitor, 11, ":npc"),
+              (check_quest_active, "qst_hunt_down_fugitive"),
+              (neg|is_currently_night),
+              (quest_slot_eq, "qst_hunt_down_fugitive", slot_quest_target_center, "$g_coop_center_party"),
+              (neg|check_quest_succeeded, "qst_hunt_down_fugitive"),
+              (neg|check_quest_failed, "qst_hunt_down_fugitive"),
+              (set_visitor, 45, "trp_fugitive"),
+          (try_end),
+          # As above, the elder dialogue opens this troop directly.
+          (troop_clear_inventory, ":npc"),
+          (reset_item_probabilities, 100),
+          (troop_add_merchandise, ":npc", itp_type_goods, 12),
+          (troop_ensure_inventory_space, ":npc", 20),
+          (troop_sort_inventory, ":npc"),
+          (try_for_range, ":walker", 0, num_town_walkers),
+              (store_add, ":entry_no", town_walker_entries_start, ":walker"),
+              (store_mod, ":walker_kind", ":walker", 2),
+              (store_add, ":walker_troop", village_walkers_begin, ":walker_kind"),
+              (set_visitor, ":entry_no", ":walker_troop"),
           (try_end),
           (set_jump_mission, "mt_village_center"),
           (jump_to_scene, "$g_coop_center_scene"),
+          (assign, "$g_coop_asi_local_battle", 1),
           (change_screen_mission),
       ]),
 
@@ -14771,11 +15406,37 @@ game_menus = [
           (modify_visitors_at_site, "$g_coop_center_scene"),
           (reset_visitors),
           # Place player at entry 0
-          (multiplayer_get_my_player, ":my_player"),
-          (player_get_troop_id, ":my_troop", ":my_player"),
-          (set_visitor, 0, ":my_troop"),
+          (set_visitor, 0, "$g_coop_local_player_troop"),
+          # The owning lord is dynamic; use it when that party slot is locally
+          # available. Always add faction-appropriate guards as ambience.
+          (party_get_slot, ":lord", "$g_coop_center_party", slot_town_lord),
+          (try_begin),
+              (gt, ":lord", 0),
+              (set_visitor, 16, ":lord"),
+          (try_end),
+          (store_faction_of_party, ":center_faction", "$g_coop_center_party"),
+          (assign, ":guard", "trp_swadian_castle_guard"),
+          (try_begin),
+              (eq, ":center_faction", "fac_kingdom_2"),
+              (assign, ":guard", "trp_vaegir_castle_guard"),
+          (else_try),
+              (eq, ":center_faction", "fac_kingdom_3"),
+              (assign, ":guard", "trp_khergit_castle_guard"),
+          (else_try),
+              (eq, ":center_faction", "fac_kingdom_4"),
+              (assign, ":guard", "trp_nord_castle_guard"),
+          (else_try),
+              (eq, ":center_faction", "fac_kingdom_5"),
+              (assign, ":guard", "trp_rhodok_castle_guard"),
+          (else_try),
+              (eq, ":center_faction", "fac_kingdom_6"),
+              (assign, ":guard", "trp_sarranid_castle_guard"),
+          (try_end),
+          (set_visitor, 23, ":guard"),
+          (set_visitor, 24, ":guard"),
           (set_jump_mission, "mt_castle_visit"),
           (jump_to_scene, "$g_coop_center_scene"),
+          (assign, "$g_coop_asi_local_battle", 1),
           (change_screen_mission),
       ]),
 
@@ -14783,6 +15444,14 @@ game_menus = [
       [
           (this_or_next|eq, "$g_coop_center_type", coop_center_type_town),
           (eq, "$g_coop_center_type", coop_center_type_castle),
+          # Fixed 2026-09-08: this pre-existing native-style "attack this
+          # settlement" option had no ownership check at all -- it showed
+          # unconditionally for ANY town/castle, including one you already
+          # personally own (Vassalage Phase 2/6 postdates this item). Hide
+          # it for your own settlements; "Manage settlement (co-op)" is the
+          # option for those.
+          (call_script, "script_coop_is_center_owner", "$g_coop_center_party"),
+          (neq, reg0, 1),
       ],
       "Lay siege and assault {s1}!",
       [
@@ -14797,6 +15466,9 @@ game_menus = [
 
       ("coop_center_assault_local",
       [
+          # Disabled for the same reason as encounter_fight_sp: a local
+          # mission is not safe for the persistent co-op character.
+          (eq, 1, 0),
           (this_or_next|eq, "$g_coop_center_type", coop_center_type_town),
           (eq, "$g_coop_center_type", coop_center_type_castle),
       ],
@@ -14815,9 +15487,16 @@ game_menus = [
       [
           (multiplayer_send_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
               multiplayer_event_multiplayer_campaign_leave_center),
+          # Wait for server_event_center_leave_ack. Its client handler sets
+          # g_coop_encounter_done, and the campaign simple-trigger performs
+          # leave_encounter from a safe game-loop context. Exiting here would
+          # close the multiplayer lobby before quest/relation data is saved.
+          (display_message, "@Leaving the settlement..."),
+          # This co-op menu has no reliable Native parent after a local scene.
+          # Go straight to the campaign map; the server acknowledgement then
+          # clears the encounter on the normal map tick.
           (assign, "$g_coop_center_party", 0),
-          (assign, "$g_coop_encounter_done", 1),
-          (change_screen_return),
+          (change_screen_map),
       ]),
     ]
   ),
@@ -14930,13 +15609,52 @@ game_menus = [
 
   # --- Coop Center Locked ---
   ("coop_center_locked", mnf_enable_hot_keys|mnf_scale_picture,
-    "Another player is already visiting {s1}. You must wait until they leave.",
+    "{s10}",
     "none",
     [
         (str_store_party_name, s1, "$g_coop_center_party"),
+        (try_begin),
+            (eq, "$g_coop_center_locked_hostile", 1),
+            (str_store_string, s10, "@You are at war with {s1}. You cannot enter this settlement."),
+        (else_try),
+            (str_store_string, s10, "@Another player is already visiting {s1}. You must wait until they leave."),
+        (try_end),
         (set_background_mesh, "mesh_pic_town1"),
     ],
     [
+      ("coop_hostile_center_assault",
+      [
+          (eq, "$g_coop_center_locked_hostile", 1),
+          (this_or_next|is_between, "$g_coop_center_party", towns_begin, towns_end),
+          (is_between, "$g_coop_center_party", castles_begin, castles_end),
+      ],
+      "Lay siege and assault {s1}!",
+      [
+          (assign, "$g_coop_encounter_done", 1),
+          (assign, "$g_coop_battle_requested", 1),
+          (multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_request_siege, "$g_coop_center_party"),
+          (change_screen_return),
+      ]),
+
+      # Villages can't be sieged like a walled center -- same request_siege
+      # event, but coop_ev_cli_request_siege picks
+      # coop_battle_type_village_player_attack instead when the target is a
+      # village (module_coop_scripts.py).
+      ("coop_hostile_center_raid",
+      [
+          (eq, "$g_coop_center_locked_hostile", 1),
+          (is_between, "$g_coop_center_party", villages_begin, villages_end),
+      ],
+      "Raid the village {s1}!",
+      [
+          (assign, "$g_coop_encounter_done", 1),
+          (assign, "$g_coop_battle_requested", 1),
+          (multiplayer_send_2_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+              multiplayer_event_multiplayer_campaign_request_siege, "$g_coop_center_party"),
+          (change_screen_return),
+      ]),
+
       ("coop_locked_leave",
       [],
       "Leave.",
@@ -15246,3 +15964,26 @@ game_menus = [
   ),
 
  ]
+
+# Append new IDs so existing menu numbers remain stable.
+game_menus += [
+  ("coop_battle_loot", 0,
+   "Battle Loot^^You recovered {s0}.^^It has been added to your inventory.", "none",
+   [(str_store_item_name, s0, "$g_coop_battle_loot_item")],
+   [("coop_battle_loot_continue", [], "Continue.", [(jump_to_menu, "mnu_auto_return_to_map")])]),
+
+  ("coop_hall_wait", 0, "Preparing the Lord's Hall.", "none", [], [
+    ("coop_hall_enter", [(eq, "$g_coop_hall_pending", 2)], "Enter the hall.",
+      [(call_script, "script_coop_enter_synced_hall")]),
+    ("coop_hall_cancel", [], "Return to the settlement.",
+      [(assign, "$g_coop_hall_pending", 0), (jump_to_menu, "mnu_coop_center_encounter")]),
+  ]),
+  ("coop_claim_battle_loot", 0,
+   "Victory! You may take equipment left by the defeated enemy.", "none", [],
+   [("coop_claim_battle_loot_open", [], "Collect the battle loot.", [
+       (assign, "$g_coop_loot_screen_open", 1),
+       (assign, "$g_coop_inv_screen_open", 1),
+       (jump_to_menu, "mnu_auto_return_to_map"),
+       (change_screen_loot, "trp_find_item_cheat"),
+   ])]),
+]

@@ -12,16 +12,16 @@ from header_quests import *
 
 quests = [
 # Note : This is defined as the first governer quest in module_constants.py: 
- ("deliver_message", "Deliver Message to {s13}", qf_random_quest,
+ ("deliver_message", "Deliver a Message", qf_random_quest,
   "{!}{s9} asked you to take a message to {s13}. {s13} was at {s4} when you were given this quest."
   ),
- ("deliver_message_to_enemy_lord", "Deliver Message to {s13}", qf_random_quest,
+ ("deliver_message_to_enemy_lord", "Deliver a Message to an Enemy Lord", qf_random_quest,
   "{!}{s9} asked you to take a message to {s13} of {s15}. {s13} was at {s4} when you were given this quest."
   ),
- ("raise_troops", "Raise {reg1} {s14}", qf_random_quest,
+ ("raise_troops", "Raise Troops", qf_random_quest,
   "{!}{s9} asked you to raise {reg1} {s14} and bring them to him."
   ),
- ("escort_lady", "Escort {s13} to {s14}", qf_random_quest,
+ ("escort_lady", "Escort a Lady", qf_random_quest,
   "{!}None"
   ),
 ## ("rescue_lady_under_siege", "Rescue {s3} from {s4}", qf_random_quest,
@@ -39,13 +39,13 @@ quests = [
 ## ("deliver_supply_to_center_under_siege", "Deliver Supplies to {s5}", qf_random_quest,
 ##  "TODO: Take {reg1} cartloads of supplies from constable {s3} and deliver them to constable {s4} at {s5}."
 ##  ),
- ("deal_with_bandits_at_lords_village", "Save the Village of {s15} from Marauding Bandits", qf_random_quest,
+ ("deal_with_bandits_at_lords_village", "Save a Village from Marauding Bandits", qf_random_quest,
   "{!}{s13} asked you to deal with the bandits who took refuge in his village of {s15} and then report back to him."
   ),
- ("collect_taxes", "Collect Taxes from {s3}", qf_random_quest,
+ ("collect_taxes", "Collect Taxes", qf_random_quest,
   "{!}{s9} asked you to collect taxes from {s3}. He offered to leave you one-fifth of all the money you collect there."
   ),
- ("hunt_down_fugitive", "Hunt Down {s4}", qf_random_quest,
+ ("hunt_down_fugitive", "Hunt Down a Fugitive", qf_random_quest,
   "{!}{s9} asked you to hunt down the fugitive named {s4}. He is currently believed to be at {s3}."
   ),
 ## ("capture_messenger", "Capture {s3}", qf_random_quest,
@@ -54,7 +54,7 @@ quests = [
 ## ("bring_back_deserters", "Bring {reg1} {s3}", qf_random_quest,
 ##  "{s1} asked you to bring {reg1} {s3}."
 ##  ),
- ("kill_local_merchant", "Assassinate Local Merchant at {s3}", qf_random_quest,
+ ("kill_local_merchant", "Assassinate a Local Merchant", qf_random_quest,
   "{!}{s9} asked you to assassinate a local merchant at {s3}."
   ),
  ("bring_back_runaway_serfs", "Bring Back Runaway Serfs", qf_random_quest,
@@ -63,13 +63,13 @@ quests = [
  ("follow_spy", "Follow the Spy to Meeting", qf_random_quest,
   "{!}{s11} asked you to follow the spy that will leave {s12}. You must be careful not to be seen by the spy during his travel, or else he may get suspicious and turn back. Once the spy meets with his accomplice, you are to ambush and capture them and bring them both back to {s11}."
   ),
- ("capture_enemy_hero", "Capture a Lord from {s13}", qf_random_quest,
+ ("capture_enemy_hero", "Capture an Enemy Lord", qf_random_quest,
   "{!}TODO: {s11} asked you to capture a lord from {s13}."
   ),
- ("lend_companion", "Lend Your Companion {s3} to {s9}", qf_random_quest,
+ ("lend_companion", "Lend Your Companion", qf_random_quest,
   "{!}{s9} asked you to lend your companion {s3} to him for a week."
   ),
- ("collect_debt", "Collect the Debt {s3} Owes to {s9}", qf_random_quest,
+ ("collect_debt", "Collect a Debt", qf_random_quest,
   "{!}{s9} asked you to collect the debt of {reg4} denars {s3} owes to him."
   ),
 ## ("capture_conspirators", "Capture Conspirators", qf_random_quest,
@@ -78,16 +78,16 @@ quests = [
 ## ("defend_nobles_against_peasants", "Defend Nobles Against Peasants", qf_random_quest,
 ##  "TODO: {s1} asked you to defend {reg1} noble parties against peasants."l
 ##  ),
- ("incriminate_loyal_commander", "Incriminate the Loyal Commander of {s13}, {s16}", qf_random_quest,
+ ("incriminate_loyal_commander", "Incriminate a Loyal Commander", qf_random_quest,
   "{!}None"
   ),
 # ("raid_caravan_to_start_war", "Raid {reg13} Caravans of {s13}", qf_random_quest,   #This is now a dynamic quest, integrated into the provocation system
 #  "None"
 #  ),
- ("meet_spy_in_enemy_town", "Meet Spy in {s13}", qf_random_quest,
+ ("meet_spy_in_enemy_town", "Meet a Spy in an Enemy Town", qf_random_quest,
   "{!}None"
   ),
- ("capture_prisoners", "Bring {reg1} {s3} Prisoners", qf_random_quest,
+ ("capture_prisoners", "Bring Prisoners", qf_random_quest,
   "{!}{s9} wanted you to bring him {reg1} {s3} as prisoners."
   ),
 
@@ -99,7 +99,7 @@ quests = [
 # Enemy Kingdom Lord quests
 ##################
 # Note : This is defined as the first enemy lord quest in module_constants.py:
- ("lend_surgeon", "Lend Your Surgeon {s3} to {s1}", qf_random_quest,
+ ("lend_surgeon", "Lend Your Surgeon", qf_random_quest,
   "{!}Lend your experienced surgeon {s3} to {s1}."
   ),
 
@@ -107,24 +107,24 @@ quests = [
 # Kingdom Army quests
 ##################
 # Note : This is defined as lord quests end in module_constants.py:
- ("follow_army", "Follow {s9}'s Army", qf_random_quest,
+ ("follow_army", "Follow the Marshal's Army", qf_random_quest,
   "{!}None"
   ),
- ("report_to_army", "Report to {s13}, the Marshall", qf_random_quest,
+ ("report_to_army", "Report to the Marshal", qf_random_quest,
   "{!}None"
   ),
 # Note : This is defined as the first army quest in module_constants.py:
 # maybe disable these army quests, except as volunteer quests that add to the capacity of the army
- ("deliver_cattle_to_army", "Deliver {reg3} Heads of Cattle to {s13}", qf_random_quest,
+ ("deliver_cattle_to_army", "Deliver Cattle to the Army", qf_random_quest,
   "{!}None"
   ),
- ("join_siege_with_army", "Join the Siege of {s14}", qf_random_quest,
+ ("join_siege_with_army", "Join the Army's Siege", qf_random_quest,
   "{!}None"
   ),
- ("screen_army", "Screen the Advance of {s13}'s Army", qf_random_quest,
+ ("screen_army", "Screen the Army's Advance", qf_random_quest,
   "{!}None"
   ),
- ("scout_waypoints", "Scout {s13}, {s14} and {s15}", qf_random_quest,
+ ("scout_waypoints", "Scout the Assigned Settlements", qf_random_quest,
   "{!}None"
   ),
 
@@ -134,24 +134,24 @@ quests = [
 ##################
 # Note : This is defined as the first kingdom lady quest in module_constants.py:
 #Rescue lord by replace will become a 
- ("rescue_lord_by_replace", "Rescue {s13} from {s14}", qf_random_quest,
+ ("rescue_lord_by_replace", "Rescue an Imprisoned Lord", qf_random_quest,
   "{!}None"
   ),
- ("deliver_message_to_prisoner_lord", "Deliver Message to {s13} at {s14}", qf_random_quest,
+ ("deliver_message_to_prisoner_lord", "Deliver a Message to a Prisoner Lord", qf_random_quest,
   "{!}None"
   ),
 
 #Courtship quests
-  ("duel_for_lady", "Challenge {s13} to a Trial of Arms", qf_random_quest,
+  ("duel_for_lady", "Challenge a Rival to a Trial of Arms", qf_random_quest,
   "{!}None"
   ),
 
-  ("duel_courtship_rival", "Challenge {s13} to a Trial of Arms (optional)", qf_random_quest,
+  ("duel_courtship_rival", "Challenge a Courtship Rival (Optional)", qf_random_quest,
   "{!}None"
   ),
 
 #Other duel quests
-  ("duel_avenge_insult", "Challenge {s13} to a Trial of Arms", qf_random_quest,
+  ("duel_avenge_insult", "Avenge an Insult in a Trial of Arms", qf_random_quest,
   "{!}None"
   ),
   
@@ -161,13 +161,13 @@ quests = [
 # Mayor quests
 ##################
 # Note : This is defined as the first mayor quest in module_constants.py: 
- ("move_cattle_herd", "Move Cattle Herd to {s13}", qf_random_quest,
+ ("move_cattle_herd", "Move a Cattle Herd", qf_random_quest,
   "{!}Guildmaster of {s10} asked you to move a cattle herd to {s13}."
   ),
- ("escort_merchant_caravan", "Escort Merchant Caravan to {s8}", qf_random_quest, #make this a non-random quest?
+ ("escort_merchant_caravan", "Escort a Merchant Caravan", qf_random_quest, #make this a non-random quest?
   "{!}Escort the merchant caravan to the town of {s8}."
   ),
- ("deliver_wine", "Deliver {reg5} Units of {s6} to {s4}", qf_random_quest,
+ ("deliver_wine", "Deliver Wine", qf_random_quest,
   "{!}{s9} of {s3} asked you to deliver {reg5} units of {s6} to the tavern in {s4} in 7 days."
   ),
  ("troublesome_bandits", "Hunt Down Troublesome Bandits", qf_random_quest,
@@ -197,13 +197,13 @@ quests = [
 # Village Elder quests
 ############
 # Note : This is defined as the first village elder quest in module_constants.py:
- ("deliver_grain", "Bring wheat to {s3}", qf_random_quest,
+ ("deliver_grain", "Bring Wheat to a Village", qf_random_quest,
   "{!}The elder of the village of {s3} asked you to bring them {reg5} packs of wheat.."
   ), 
- ("deliver_cattle", "Deliver {reg5} Heads of Cattle to {s3}", qf_random_quest,
+ ("deliver_cattle", "Deliver Cattle to a Village", qf_random_quest,
   "{!}The elder of the village of {s3} asked you to bring {reg5} heads of cattle."
   ), 
- ("train_peasants_against_bandits", "Train the Peasants of {s13} Against Bandits.", qf_random_quest,
+ ("train_peasants_against_bandits", "Train Peasants Against Bandits", qf_random_quest,
   "{!}None"
   ), 
 # Deliver horses, Deliver food, Escort_Caravan, Hunt bandits, Ransom Merchant.
@@ -214,7 +214,7 @@ quests = [
 # Bandit quests: Capture rich merchant, capture banker, kill manhunters?..
 
 # Note : This is defined as the last village elder quest in module_constants.py:
- ("eliminate_bandits_infesting_village", "Save the Village of {s7} from Marauding Bandits", qf_random_quest,
+ ("eliminate_bandits_infesting_village", "Save a Village from Marauding Bandits", qf_random_quest,
   "{!}A villager from {s7} begged you to save their village from the bandits that took refuge there."
   ),
 
@@ -243,12 +243,12 @@ quests = [
 
   
  # Join Kingdom quest
-  ("join_faction", "Give Oath of Homage to {s1}", qf_random_quest,
+  ("join_faction", "Give an Oath of Homage", qf_random_quest,
   "{!}Find {s1} and give him your oath of homage."
   ),
 
  # Rebel against Kingdom quest
- ("rebel_against_kingdom", "Help {s13} Claim the Throne of {s14}", qf_random_quest,
+ ("rebel_against_kingdom", "Help a Claimant Take the Throne", qf_random_quest,
   "{!}None"
   ),
 

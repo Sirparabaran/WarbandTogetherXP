@@ -1354,6 +1354,10 @@ mission_templates = [
       (ti_tab_pressed, 0, 0, 
       [
         (try_begin),
+          (eq, "$g_coop_in_local_visit", 1),
+          (call_script, "script_coop_local_visit_exit"),
+          (finish_mission, 0),
+        (else_try),
           (eq, "$g_main_attacker_agent", 0),
           (set_trigger_result, 1),
         (try_end),  
@@ -1656,6 +1660,10 @@ mission_templates = [
       (ti_tab_pressed, 0, 0,
       [
         (try_begin),
+          (eq, "$g_coop_in_local_visit", 1),
+          (call_script, "script_coop_local_visit_exit"),
+          (finish_mission, 0),
+        (else_try),
           (this_or_next|eq, "$talk_context", tc_escape),
           (eq, "$talk_context", tc_prison_break),
           (display_message, "str_cannot_leave_now"),
@@ -3520,6 +3528,10 @@ mission_templates = [
       (ti_tab_pressed, 0, 0,
       [
         (try_begin),
+          (eq, "$g_coop_in_local_visit", 1),
+          (call_script, "script_coop_local_visit_exit"),
+          (finish_mission, 0),
+        (else_try),
           (this_or_next|eq, "$talk_context", tc_escape),
           (eq, "$talk_context", tc_prison_break),
           (display_message, "str_cannot_leave_now"),
@@ -11895,7 +11907,7 @@ mission_templates = [
          (get_max_players, ":num_players"),
          (try_for_range, ":player_no", 1, ":num_players"), #0 is server so starting from 1
            (player_is_active, ":player_no"),
-           (multiplayer_send_int_to_player, ":player_no", multiplayer_event_start_death_mode),
+           (multiplayer_send_int_to_player, ":player_no", multiplayer_event_start_death_mode, 0),
          (try_end),
 
          (scene_prop_get_instance, ":pole_1_id", "spr_headquarters_pole_code_only", 0),
@@ -16249,3 +16261,16 @@ mission_templates = [
 
 
 ] + coop_mission_templates
+
+# Reuse Native hall behaviour with a visitor-controlled co-op player and
+# the same local-visit Tab exit used by the working settlement templates.
+_native_hall = next(m for m in mission_templates if m[0] == "visit_town_castle")
+_hall_entries = list(_native_hall[4])
+_hall_entries[0] = (0, mtef_visitor_source | mtef_team_0,
+                    af_override_horse | af_override_weapons | af_override_head, 0, 1, [])
+_hall_triggers = [
+    (ti_tab_pressed, 0, 0, [], [(finish_mission, 0)])
+    if t[0] == ti_tab_pressed else t for t in _native_hall[5]
+]
+mission_templates.append(("coop_visit_hall", _native_hall[1], _native_hall[2],
+                          _native_hall[3], _hall_entries, _hall_triggers))

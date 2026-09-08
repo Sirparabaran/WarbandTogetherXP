@@ -1636,6 +1636,9 @@ coop_presentations = [
         (presentation_set_duration, 0),
         # coop only show troop select if heroes are available
         (multiplayer_get_my_team, ":my_team"),
+        (multiplayer_get_my_player, ":my_player_no"),
+        (player_get_slot, ":forced_troop", ":my_player_no", slot_player_coop_selected_troop),
+        (le, ":forced_troop", 0),
         (try_begin),
           (eq, ":my_team", 0),
           (party_get_num_companion_stacks, ":num_heroes", coop_temp_party_enemy_heroes),

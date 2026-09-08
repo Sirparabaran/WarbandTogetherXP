@@ -56,6 +56,19 @@ factions = [
 
   ("kingdoms_end","{!}kingdoms_end", 0, 0,[], []),
 
+# Vassalage Phase 5: fixed pool of 4 normally-inactive player-owned
+# "kingdom" factions (mod is intended for max 4 connected players). Modeled
+# on fac_player_supporters_faction above: placeholder name/color here,
+# activated/renamed/recolored at runtime by coop_apply_found_kingdom
+# (module_coop_scripts.py) -- never created. Deliberately NOT inside
+# kingdoms_begin..kingdoms_end (see coop_player_kingdoms_begin/_end,
+# module_constants.py) so Phase 1's NPC-only swear-fealty never matches them.
+  ("player_faction_1", "{!}Player Kingdom 1", 0, 0.9, default_kingdom_relations, [], 0xAA5533),
+  ("player_faction_2", "{!}Player Kingdom 2", 0, 0.9, default_kingdom_relations, [], 0x5533AA),
+  ("player_faction_3", "{!}Player Kingdom 3", 0, 0.9, default_kingdom_relations, [], 0x33AA55),
+  ("player_faction_4", "{!}Player Kingdom 4", 0, 0.9, default_kingdom_relations, [], 0xAAAA33),
+  ("coop_player_kingdoms_end", "{!}coop_player_kingdoms_end", 0, 0, [], []),
+
   ("robber_knights",  "{!}robber_knights", 0, 0.1, [], []),
 
   ("khergits","{!}Khergits", 0, 0.5,[("player_faction",0.0)], []),

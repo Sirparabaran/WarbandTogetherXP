@@ -205,6 +205,9 @@ slot_faction_ai_last_decisive_event     = 98 #capture a fortress or declaration 
 slot_faction_morale_of_player_troops    = 99
 
 #diplomacy
+slot_faction_coop_owner_troop = 200  # Vassalage Phase 5: founder's troop id for a
+                                      # player_faction_* pool slot, -1 if idle.
+
 slot_faction_truce_days_with_factions_begin 			= 120
 slot_faction_provocation_days_with_factions_begin 		= 130
 slot_faction_war_damage_inflicted_on_factions_begin 	= 140
@@ -538,6 +541,9 @@ slot_party_orders_time				    	= 247
 slot_party_temp_slot_1			            = 248 #right now used only within a single script, merchant_road_info_to_s42, to denote closed roads. Now also used in comparative scripts
 slot_party_under_player_suggestion			= 249 #move this up a bit
 slot_party_coop_battle_slot                 = 600 #battle-server slot+1 while this party's fight runs on a dedicated battle server; 0 = not in a battle. 600 = above every occupied party-slot range (trade good productions end ~546); party slots are one namespace shared with slot_village_*/slot_town_*/slot_center_*
+slot_party_coop_hostile_faction             = 601 #per-player siege hostility; does not alter shared faction diplomacy
+slot_party_coop_world_battle_announced      = 602 #legacy lord-battle opponent marker
+slot_party_coop_world_battle_report_hour    = 603 #campaign hour of the last lord-battle broadcast
 slot_town_trade_good_prices_begin 			= 250
 
 slot_center_last_reconnoitered_by_faction_time 				= 350
@@ -1102,6 +1108,13 @@ slot_quest_dont_give_again_remaining_days = 25
 slot_quest_failure_consequence      = 26
 slot_quest_temp_slot      			= 27
 
+# Client-only pending mutations; zero means no pending message. Status is
+# stored plus one, since wire status zero is valid progress.
+slot_quest_coop_pending_start = 100
+slot_quest_coop_pending_status = 101
+slot_quest_coop_pending_state = 102
+coop_quest_status_succeeded = 4  # objective done, reward still claimable
+
 ########################################################
 ##  PARTY TEMPLATE SLOTS   #############################
 ########################################################
@@ -1369,6 +1382,15 @@ kingdoms_end = "fac_kingdoms_end"
 
 npc_kingdoms_begin = "fac_kingdom_1"
 npc_kingdoms_end = kingdoms_end
+
+# Vassalage Phase 5: pool of 4 pre-declared, normally-inactive player-owned
+# "kingdom" factions (module_factions.py, after kingdoms_end) -- modeled on
+# native's own fac_player_supporters_faction (activated/renamed/recolored
+# at runtime, never created). A separate, non-contiguous range from
+# npc_kingdoms_begin..end on purpose: swear-fealty (Phase 1) stays NPC-only,
+# only specific vassalage call sites are extended to also accept this range.
+coop_player_kingdoms_begin = "fac_player_faction_1"
+coop_player_kingdoms_end = "fac_coop_player_kingdoms_end"
 
 bandits_begin = "trp_bandit"
 bandits_end = "trp_black_khergit_horseman"
@@ -1924,6 +1946,7 @@ coop_char_dirty_xp      = 16
 coop_char_dirty_gold    = 32
 coop_char_dirty_health  = 64
 coop_char_dirty_renown  = 128
+coop_char_dirty_faction = 256
 # Player slot for tracking current trade merchant troop
 slot_player_coop_merchant_troop = 63
 # Player slot for tracking which center the player has locked
@@ -1939,8 +1962,29 @@ coop_char_state_ready    = 2  # load-or-creation completed; saves allowed
 coop_char_state_nodict   = 3  # battle-server load found no dict; saves stay
                               # blocked and the hydrate poll stops retrying
 slot_player_coop_steam_acctid = 67  # 32-bit Steam account id self-reported
+slot_player_coop_quest_data_no = 68
+slot_player_coop_quest_data_center = 69
+slot_player_coop_quest_data_amount = 70
+slot_player_coop_quest_data_troop = 71
+slot_player_coop_captor = 72
+slot_player_coop_escape_hour = 73
+slot_player_coop_safe_until = 74
                                     # via ch49 ev 8 / ch126 ev 54; 0 = no
                                     # Steam (username-keyed persistence)
+
+# Quest Tier A: per-player live party (or center) being watched by
+# coop_check_tier_a_quest_progress for that player's currently-active
+# instance of the given quest type. 0 = not currently tracked. Never read
+# from the native qst_X singleton server-side -- see docs/flows/quests.md.
+slot_player_coop_quest_party_troublesome_bandits = 75
+slot_player_coop_quest_party_cattle_herd = 76
+slot_player_coop_quest_center_cattle_herd = 77
+slot_player_coop_quest_party_escort_caravan = 78
+
+# Vassalage Phase 5: requester player_no of a pending "join my kingdom"
+# invite awaiting this player's accept/reject, or -1. Session-only, not
+# dict-persisted -- lost on disconnect is fine (the requester just re-asks).
+slot_player_coop_pending_join_from = 79
 
 # Battle-server identify mirror: acctid+1 stored on the player's campaign
 # troop (multiplayer_campaign_player_troops_begin + player_no). Troop slots
@@ -1961,6 +2005,16 @@ slot_troop_coop_battle_nodict = 158
 # @char_xp at the baseline so the pending credit stays the single
 # payer. Cleared on player exit with the mirror.
 slot_troop_coop_battle_xp_base = 159
+
+# Vassalage Phase 1: this player's sworn kingdom faction id, or -1 for none.
+# Persisted per-player in $coop_char_dict (@char_faction) -- NOT on the
+# shared native $players_kingdom/fac_player_supporters_faction singleton,
+# which cannot hold independent membership for multiple connected players.
+# Mirrored to trp_player (native report/dialog conditions read trp_player).
+slot_troop_coop_faction = 160
+# Minimum renown to swear fealty (server-side re-validation of the dialog's
+# own gate; the client dialog condition cannot be trusted).
+coop_vassal_min_renown = 50
 
 # trp_temp_troop slots for client-side character data (server-pushed)
 slot_coop_char_xp    = 30
@@ -2003,8 +2057,8 @@ slot_coop_local_snap_stride     = 3
 
 # trp_temp_array_c slots for NPC visitor data during local center visit
 slot_coop_local_visit_npc_count = 70    # number of NPCs received
-slot_coop_local_visit_npc_begin = 71    # 71-110: max 20 NPCs * 2 (entry_point, troop_id)
-slot_coop_local_visit_npc_stride = 2
+slot_coop_local_visit_npc_begin = 71    # 71-86: up to 16 server hall troop IDs
+slot_coop_local_visit_npc_stride = 1
 
 # Max enemy stacks we can receive for local battles
 coop_local_battle_max_stacks    = 20
@@ -2014,6 +2068,14 @@ coop_local_battle_max_stacks    = 20
 ########################################################
 
 slot_center_coop_lock_player = 94      # player_no holding center lock, -1 = free
+# Vassalage Phase 6: cosmetic-only governor troop for a personally-owned
+# settlement, -1 = none. Must be one of the owner's own party's companions
+# at appointment time; no mechanical effect this pass.
+slot_center_coop_governor_troop = 403
+# Client-only purchase queue. Separate from the server's village stock.
+slot_center_coop_pending_cattle = 400
+slot_center_coop_pending_hire = 401
+slot_center_coop_pending_hire_troop = 402
 # The LOCAL-siege target is stashed in the char dict (@char_siege_center),
 # not in a center slot: player_no does not survive the rejoin around the
 # local mission.
@@ -2059,6 +2121,18 @@ coop_battle_port_base = 7241
 # Multiplayer game types for coop battles
 multiplayer_game_type_coop_battle      = 11
 multiplayer_game_type_coop_siege       = 12
+
+# Campaign world-event payloads.  These are sent through the existing
+# server_event_world_event packet (event type + affected party/troop).
+coop_world_event_tournament             = 1
+coop_world_event_siege_started           = 2
+coop_world_event_player_captive          = 3
+coop_world_event_lord_captured           = 4
+coop_world_event_player_escaped          = 5
+coop_world_event_village_raid_started    = 6
+coop_world_event_village_raided          = 7
+coop_world_event_siege_lifted            = 8
+coop_world_event_lord_battle             = 9
 
 # Coop network event subtypes (send_to_server)
 coop_event_start_map                              = 1
@@ -2115,6 +2189,20 @@ coop_event_battle_retreat                         = 52
 coop_event_return_is_initiator                    = 53
 coop_event_identify                               = 54
 coop_event_return_to_campaign                     = 55  # ch127 server->client: battle over, auto-reconnect to the campaign server (ASI reads $g_coop_return_to_campaign)
+coop_event_show_battle_loot                       = 56  # server->client: authoritative battle-loot confirmation (item, modifier)
+coop_event_battle_loot_slot                       = 57  # server->client: loot source slot, item, modifier
+coop_event_battle_loot_open                       = 58  # server->client: source complete; open native loot UI
+coop_event_battle_loot_clear                      = 59  # server->client: clear client loot source before streaming slots
+coop_event_battle_equipment_slot                  = 60  # battle server->client: authoritative participant equipment slot
+
+# Per-player, short-lived authoritative loot allowance. Slots 601-612 hold
+# the item ids that may be introduced by the next native loot-window sync.
+slot_player_coop_loot_active                      = 600
+slot_player_coop_loot_items_begin                 = 601
+slot_player_coop_loot_items_end                   = 613
+slot_player_coop_loot_modifiers_begin             = 614
+slot_player_coop_loot_modifiers_end               = 626
+slot_player_coop_loot_delivery_state              = 627 # 1=queue post-reconnect delivery, 2=delivered
 
 # Coop player slot -- which troop the player has selected for the battle
 # Slots 40-48 are used by invasion mode (ccoop); 49 is free
@@ -2142,6 +2230,7 @@ coop_temp_casualties_enemy_begin                  = coop_temp_party_enemy_begin 
 coop_temp_party_ally_begin                        = coop_temp_casualties_enemy_begin + 40
 coop_temp_casualties_ally_begin                   = coop_temp_party_ally_begin + 40
 coop_siege_join_radius                            = 5    # map-distance within which friendly AI parties join a dedicated siege as attackers (placeholder rule until a siege camp exists)
+coop_lord_ai_detection_radius                     = 15   # map-distance within which an at-war lord reacts (flee/pursue) to a connected player's strength; needs playtest tuning
 
 # Hero temp parties (use existing reserved casualty parties as storage)
 coop_temp_party_enemy_heroes                      = "p_temp_casualties_2"
