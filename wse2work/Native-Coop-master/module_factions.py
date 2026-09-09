@@ -71,10 +71,12 @@ factions = [
   # Purely cosmetic insurance: a founded kingdom always gets renamed to
   # "Kingdom of {founder}" regardless, these are just what an unfounded or
   # not-yet-renamed slot shows instead of an obviously-broken dev string.
-  ("player_faction_1", "Kingdom of Ashenmoor", 0, 0.9, default_kingdom_relations, [], 0xAA5533),
-  ("player_faction_2", "Kingdom of Drakenfell", 0, 0.9, default_kingdom_relations, [], 0x5533AA),
-  ("player_faction_3", "Kingdom of Whitecrest", 0, 0.9, default_kingdom_relations, [], 0x33AA55),
-  ("player_faction_4", "Kingdom of Blackmarsh", 0, 0.9, default_kingdom_relations, [], 0xAAAA33),
+  # 2026-09-10: swapped the invented fallback names for Bannerlord's own
+  # kingdom names (same setting, later era) at the user's request.
+  ("player_faction_1", "Kingdom of Vlandia", 0, 0.9, default_kingdom_relations, [], 0xAA5533),
+  ("player_faction_2", "Calradic Empire", 0, 0.9, default_kingdom_relations, [], 0x5533AA),
+  ("player_faction_3", "Kingdom of Sturgia", 0, 0.9, default_kingdom_relations, [], 0x33AA55),
+  ("player_faction_4", "Kingdom of Battania", 0, 0.9, default_kingdom_relations, [], 0xAAAA33),
   ("coop_player_kingdoms_end", "{!}coop_player_kingdoms_end", 0, 0, [], []),
 
   ("robber_knights",  "{!}robber_knights", 0, 0.1, [], []),

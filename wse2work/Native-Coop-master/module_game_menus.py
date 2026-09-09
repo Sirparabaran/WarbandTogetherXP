@@ -15955,116 +15955,15 @@ game_menus = [
     "{s11}",
     "none",
     [
-        (set_background_mesh, "mesh_pic_defeat"),
-
-        (assign, ":win_loss", "$g_battle_result"),
-        (try_begin),
-            (eq, "$g_battle_won", 1),
-            (assign, ":win_loss", 1),
-        (try_end),
-
-        # Casualties + XP come from the kill-tally parties populated during the
-        # battle by mt_lead_charge. The post-battle player party/troop are
-        # unreadable on a coop client (connection torn down), so we never touch
-        # them here. p_coop_local_player_cas = our killed troops (per type);
-        # p_coop_local_enemy_cas = enemies defeated (XP basis).
-        (assign, ":total_casualties", 0),
-        (str_clear, s8),
-        (assign, ":cas_idx", 0),
-
-        # Our casualties: one packed $g_coop_result_cas_N per troop type.
-        (party_get_num_companion_stacks, ":num_cas", "p_coop_local_player_cas"),
-        (try_for_range, ":i", 0, ":num_cas"),
-            (lt, ":cas_idx", 10),
-            (party_stack_get_troop_id, ":troop_id", "p_coop_local_player_cas", ":i"),
-            (party_stack_get_size, ":killed", "p_coop_local_player_cas", ":i"),
-            (gt, ":killed", 0),
-            (val_add, ":total_casualties", ":killed"),
-            # Pack troop_id * 1000 + killed into a global for the ASI to read.
-            (store_mul, ":packed", ":troop_id", 1000),
-            (val_add, ":packed", ":killed"),
-            (try_begin),
-                (eq, ":cas_idx", 0), (assign, "$g_coop_result_cas_0", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 1), (assign, "$g_coop_result_cas_1", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 2), (assign, "$g_coop_result_cas_2", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 3), (assign, "$g_coop_result_cas_3", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 4), (assign, "$g_coop_result_cas_4", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 5), (assign, "$g_coop_result_cas_5", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 6), (assign, "$g_coop_result_cas_6", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 7), (assign, "$g_coop_result_cas_7", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 8), (assign, "$g_coop_result_cas_8", ":packed"),
-            (else_try),
-                (eq, ":cas_idx", 9), (assign, "$g_coop_result_cas_9", ":packed"),
-            (try_end),
-            (val_add, ":cas_idx", 1),
-            (assign, reg1, ":killed"),
-            (str_store_troop_name, s1, ":troop_id"),
-            (str_store_string, s8, "@{s8}^  {reg1} {s1}"),
-        (try_end),
-
-        # XP: vanilla formula from enemies defeated (mirrors
-        # script_party_give_xp_and_gold): per non-hero enemy stack,
-        # ((level + 10)^2 / 10) * size; total capped at 40000. Applied
-        # server-side via party_add_xp.
-        (assign, ":xp_gained", 0),
-        (party_get_num_companion_stacks, ":num_en", "p_coop_local_enemy_cas"),
-        (try_for_range, ":i", 0, ":num_en"),
-            (party_stack_get_troop_id, ":etroop", "p_coop_local_enemy_cas", ":i"),
-            (neg|troop_is_hero, ":etroop"),
-            (party_stack_get_size, ":esize", "p_coop_local_enemy_cas", ":i"),
-            (store_character_level, ":elevel", ":etroop"),
-            (store_add, ":egain", ":elevel", 10),
-            (val_mul, ":egain", ":egain"),
-            (val_div, ":egain", 10),
-            (val_mul, ":egain", ":esize"),
-            (val_add, ":xp_gained", ":egain"),
-        (try_end),
-        (val_min, ":xp_gained", 40000),
-        # Native randomizes the pool by rand(50,100)/100 AFTER the cap
-        # (script_party_give_xp_and_gold). The dedicated battle path applies
-        # the same roll (coop_copy_parties_to_file_mp @battle_xp_rand); mirror
-        # it here so local and dedicated fights pay comparable XP.
-        (store_random_in_range, ":xp_rand", 50, 101),
-        (val_mul, ":xp_gained", ":xp_rand"),
-        (val_div, ":xp_gained", 100),
-
-        # This battle's tally is consumed; disarm recording.
-        (assign, "$g_coop_local_cas_recording", 0),
-
-        # Verification log (client console).
-        (assign, reg5, ":xp_gained"),
-        (assign, reg6, ":total_casualties"),
-        (assign, reg7, ":cas_idx"),
-        (display_message, "@[LOCAL DEBRIEF] xp={reg5} total_cas={reg6} cas_stacks={reg7}"),
-
-        # Write results to globals the ASI reads directly
-        (assign, "$g_coop_result_win_loss", ":win_loss"),
-        (assign, "$g_coop_result_xp", ":xp_gained"),
-        (assign, "$g_coop_result_cas_count", ":cas_idx"),
-
-        # Build display string
-        (assign, reg10, ":total_casualties"),
-        (try_begin),
-            (eq, ":win_loss", 1),
-            (str_store_string, s11, "@Victory!^^Your casualties: {reg10}{s8}^^XP earned: {reg5}^^Results saved. Rejoin campaign to apply."),
-            (set_background_mesh, "mesh_pic_victory"),
-        (else_try),
-            (eq, ":win_loss", -1),
-            (str_store_string, s11, "@Defeat...^^Your casualties: {reg10}{s8}^^Results saved. Rejoin campaign to apply."),
-        (else_try),
-            (str_store_string, s11, "@Battle ended.^^Your casualties: {reg10}{s8}^^Results saved. Rejoin campaign to apply."),
-        (try_end),
-
-        # Signal ASI -- must be LAST (ASI polls this from background thread)
-        (assign, "$g_coop_result_ready", 1),
+        # Fixed 2026-09-10: this used to compute the result itself; now
+        # delegates to script_coop_compute_local_fight_result, called from
+        # the mission's own end-of-battle triggers (guaranteed to run even
+        # when a real mid-fight disconnect preempts this menu ever
+        # displaying at all -- see that script's own comment). Idempotent,
+        # so calling it again here (the case where this menu WAS reached)
+        # is a safe no-op if the result was already computed and s11/s8
+        # are still populated from that earlier call.
+        (call_script, "script_coop_compute_local_fight_result"),
     ],
     [
       ("coop_local_battle_done",

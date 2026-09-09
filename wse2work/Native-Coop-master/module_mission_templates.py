@@ -651,6 +651,33 @@ common_battle_tab_press = (
   [
     (try_begin),
       (eq, "$g_battle_won", 1),
+      # Fixed 2026-09-10: a coop local fight (encounter_fight_sp et al) can
+      # genuinely disconnect the client mid-battle -- unlike a settlement
+      # visit, this isn't a defensive safety net, it's the expected case
+      # the debrief menu's own result-relay design already assumes. A user
+      # report confirmed Tab during a fight went straight to the MP lobby,
+      # never reaching mnu_coop_local_battle_debrief's "Continue" button
+      # at all -- arming the reconnect there was too late. Arming it HERE
+      # instead, right where finish_mission actually fires (not on the
+      # earlier Tab press, which might still be declined via the retreat
+      # question box below -- arming while the player keeps fighting could
+      # yank them toward the MP browser mid-battle), matches the proven
+      # battle-server pattern (coop_battle_check_round_end in
+      # module_coop_scripts.py arms it well before its own kick, "so the
+      # event has the kick handler's ~10s delay to deliver"). Gated on
+      # $g_coop_local_cas_recording (true only during an actual coop local
+      # fight) so this shared trigger stays a no-op for every other use,
+      # native singleplayer included. Compute the result BEFORE arming the
+      # reconnect (2026-09-10) -- see coop_compute_local_fight_result's own
+      # comment: the debrief menu that used to be the only place this ran
+      # may never actually display once a real disconnect happens.
+      (try_begin),
+        (eq, "$g_coop_local_cas_recording", 1),
+        (call_script, "script_coop_compute_local_fight_result"),
+        # Delayed arm (2026-09-10) -- see the countdown consumer in
+        # module_simple_triggers.py for why this is no longer immediate.
+        (assign, "$g_coop_local_return_pending", 6),
+      (try_end),
       (call_script, "script_count_mission_casualties_from_agents"),
       (finish_mission,0),
     (else_try),
@@ -900,6 +927,17 @@ common_battle_check_victory_condition = (
     (call_script, "script_play_victorious_sound"),
     ],
   [
+    # Fixed 2026-09-10, same as lead_charge's own win/loss triggers -- arm
+    # the coop local-fight auto-reconnect right where finish_mission fires
+    # for a local siege win too, not just field battles. Computes the
+    # result first -- see coop_compute_local_fight_result's own comment.
+    (try_begin),
+      (eq, "$g_coop_local_cas_recording", 1),
+      (call_script, "script_coop_compute_local_fight_result"),
+      # Delayed arm (2026-09-10) -- see the countdown consumer in
+      # module_simple_triggers.py for why this is no longer immediate.
+      (assign, "$g_coop_local_return_pending", 6),
+    (try_end),
     (call_script, "script_count_mission_casualties_from_agents"),
     (finish_mission, 1),
     ])
@@ -947,6 +985,14 @@ common_siege_check_defeat_condition = (
     (try_end),
     (assign, "$g_battle_result", -1),
     (set_mission_result,-1),
+    # Fixed 2026-09-10, same as common_battle_check_victory_condition above.
+    (try_begin),
+      (eq, "$g_coop_local_cas_recording", 1),
+      (call_script, "script_coop_compute_local_fight_result"),
+      # Delayed arm (2026-09-10) -- see the countdown consumer in
+      # module_simple_triggers.py for why this is no longer immediate.
+      (assign, "$g_coop_local_return_pending", 6),
+    (try_end),
     (call_script, "script_count_mission_casualties_from_agents"),
     (finish_mission,0),
     ])
@@ -2344,6 +2390,15 @@ mission_templates = [
           (str_store_string, s5, "str_retreat"),
           (call_script, "script_simulate_retreat", 10, 20, 1),
         (try_end),
+        # Confirmed retreat -- see common_battle_tab_press's fixed
+        # 2026-09-10 comment for why this arms here.
+        (try_begin),
+          (eq, "$g_coop_local_cas_recording", 1),
+          (call_script, "script_coop_compute_local_fight_result"),
+          # Delayed arm (2026-09-10) -- see the countdown consumer in
+          # module_simple_triggers.py for why this is no longer immediate.
+          (assign, "$g_coop_local_return_pending", 6),
+        (try_end),
         (call_script, "script_count_mission_casualties_from_agents"),
         (finish_mission,0),]),
 
@@ -2625,6 +2680,17 @@ mission_templates = [
          (try_end),
          ],
        [
+         # Same fix as common_battle_tab_press (2026-09-10): arm the coop
+         # local-fight auto-reconnect right at the natural win too, not
+         # just the Tab/retreat paths. Computes the result first -- see
+         # coop_compute_local_fight_result's own comment.
+         (try_begin),
+           (eq, "$g_coop_local_cas_recording", 1),
+           (call_script, "script_coop_compute_local_fight_result"),
+           # Delayed arm (2026-09-10) -- see the countdown consumer in
+           # module_simple_triggers.py for why this is no longer immediate.
+           (assign, "$g_coop_local_return_pending", 6),
+         (try_end),
          (call_script, "script_count_mission_casualties_from_agents"),
          (finish_mission, 1),
          ]),
@@ -2638,6 +2704,15 @@ mission_templates = [
               (call_script, "script_simulate_retreat", 10, 20, 1),
               (assign, "$g_battle_result", -1),
               (set_mission_result,-1),
+              # Same fix as above -- natural defeat (hero fallen).
+              (try_begin),
+                (eq, "$g_coop_local_cas_recording", 1),
+                (call_script, "script_coop_compute_local_fight_result"),
+                # Delayed arm (2026-09-10) -- see the countdown consumer in
+                # module_simple_triggers.py for why this is no longer
+                # immediate.
+                (assign, "$g_coop_local_return_pending", 6),
+              (try_end),
               (call_script, "script_count_mission_casualties_from_agents"),
               (finish_mission,0)]),
 

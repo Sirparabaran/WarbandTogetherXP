@@ -8378,6 +8378,123 @@ coop_scripts = [
       (try_end),
   ]),
 
+  # Computes a coop local fight's win/loss/casualties/XP from the kill-tally
+  # parties (p_coop_local_player_cas/p_coop_local_enemy_cas) and writes the
+  # $g_coop_result_* globals the ASI relays to the server once reconnected
+  # -- same job mnu_coop_local_battle_debrief's own init block used to do
+  # alone. Fixed 2026-09-10: a real disconnect (the expected case for an
+  # actual local fight, not just a defensive maybe) can happen right as
+  # finish_mission fires, and the engine's own post-disconnect navigation
+  # can preempt the queued jump_to_menu entirely -- the debrief screen
+  # (and therefore its result computation) was silently never reached, so
+  # no result was ever written for the reconnect-triggered ASI relay to
+  # find. Now called directly from the mission's own end-of-battle
+  # triggers (common_battle_tab_press, the retreat confirm, and both
+  # win/loss triggers in module_mission_templates.py) at the exact point
+  # $g_coop_return_to_campaign gets armed, guaranteed to run regardless of
+  # whether the debrief menu itself ever displays. Idempotent via the same
+  # $g_coop_local_cas_recording flag the original code already used to
+  # mark the tally "consumed" -- a second call (e.g. the debrief IS
+  # reached afterward) finds it already 0 and does nothing, so results
+  # are never double-counted or overwritten with stale data.
+  ("coop_compute_local_fight_result",
+    [
+        (try_begin),
+            (eq, "$g_coop_local_cas_recording", 1),
+
+            (set_background_mesh, "mesh_pic_defeat"),
+            (assign, ":win_loss", "$g_battle_result"),
+            (try_begin),
+                (eq, "$g_battle_won", 1),
+                (assign, ":win_loss", 1),
+            (try_end),
+
+            (assign, ":total_casualties", 0),
+            (str_clear, s8),
+            (assign, ":cas_idx", 0),
+
+            (party_get_num_companion_stacks, ":num_cas", "p_coop_local_player_cas"),
+            (try_for_range, ":i", 0, ":num_cas"),
+                (lt, ":cas_idx", 10),
+                (party_stack_get_troop_id, ":troop_id", "p_coop_local_player_cas", ":i"),
+                (party_stack_get_size, ":killed", "p_coop_local_player_cas", ":i"),
+                (gt, ":killed", 0),
+                (val_add, ":total_casualties", ":killed"),
+                (store_mul, ":packed", ":troop_id", 1000),
+                (val_add, ":packed", ":killed"),
+                (try_begin),
+                    (eq, ":cas_idx", 0), (assign, "$g_coop_result_cas_0", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 1), (assign, "$g_coop_result_cas_1", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 2), (assign, "$g_coop_result_cas_2", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 3), (assign, "$g_coop_result_cas_3", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 4), (assign, "$g_coop_result_cas_4", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 5), (assign, "$g_coop_result_cas_5", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 6), (assign, "$g_coop_result_cas_6", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 7), (assign, "$g_coop_result_cas_7", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 8), (assign, "$g_coop_result_cas_8", ":packed"),
+                (else_try),
+                    (eq, ":cas_idx", 9), (assign, "$g_coop_result_cas_9", ":packed"),
+                (try_end),
+                (val_add, ":cas_idx", 1),
+                (assign, reg1, ":killed"),
+                (str_store_troop_name, s1, ":troop_id"),
+                (str_store_string, s8, "@{s8}^  {reg1} {s1}"),
+            (try_end),
+
+            (assign, ":xp_gained", 0),
+            (party_get_num_companion_stacks, ":num_en", "p_coop_local_enemy_cas"),
+            (try_for_range, ":i", 0, ":num_en"),
+                (party_stack_get_troop_id, ":etroop", "p_coop_local_enemy_cas", ":i"),
+                (neg|troop_is_hero, ":etroop"),
+                (party_stack_get_size, ":esize", "p_coop_local_enemy_cas", ":i"),
+                (store_character_level, ":elevel", ":etroop"),
+                (store_add, ":egain", ":elevel", 10),
+                (val_mul, ":egain", ":egain"),
+                (val_div, ":egain", 10),
+                (val_mul, ":egain", ":esize"),
+                (val_add, ":xp_gained", ":egain"),
+            (try_end),
+            (val_min, ":xp_gained", 40000),
+            (store_random_in_range, ":xp_rand", 50, 101),
+            (val_mul, ":xp_gained", ":xp_rand"),
+            (val_div, ":xp_gained", 100),
+
+            (assign, "$g_coop_local_cas_recording", 0),
+
+            (assign, reg5, ":xp_gained"),
+            (assign, reg6, ":total_casualties"),
+            (assign, reg7, ":cas_idx"),
+            (display_message, "@[LOCAL DEBRIEF] xp={reg5} total_cas={reg6} cas_stacks={reg7}"),
+
+            (assign, "$g_coop_result_win_loss", ":win_loss"),
+            (assign, "$g_coop_result_xp", ":xp_gained"),
+            (assign, "$g_coop_result_cas_count", ":cas_idx"),
+
+            (assign, reg10, ":total_casualties"),
+            (try_begin),
+                (eq, ":win_loss", 1),
+                (str_store_string, s11, "@Victory!^^Your casualties: {reg10}{s8}^^XP earned: {reg5}^^Results saved. Rejoin campaign to apply."),
+                (set_background_mesh, "mesh_pic_victory"),
+            (else_try),
+                (eq, ":win_loss", -1),
+                (str_store_string, s11, "@Defeat...^^Your casualties: {reg10}{s8}^^Results saved. Rejoin campaign to apply."),
+            (else_try),
+                (str_store_string, s11, "@Battle ended.^^Your casualties: {reg10}{s8}^^Results saved. Rejoin campaign to apply."),
+            (try_end),
+
+            # Signal the ASI -- must be LAST (its 500ms thread polls this).
+            (assign, "$g_coop_result_ready", 1),
+        (try_end),
+    ]),
+
   # Vassalage Phase 6 -- client-safe helper for the governor picker: the
   # nth hero companion (0-indexed) in the LOCAL player's own party.
   # p_main_party is safe to read locally here (unlike a center/garrison
@@ -10284,6 +10401,16 @@ coop_scripts = [
                (dict_get_int, ":imod", ":equip_dict", "@battle_join_player_{reg20}_imd_{reg21}"),
                (troop_set_inventory_slot, ":troop_no", reg21, ":item"),
                (troop_set_inventory_slot_modifier, ":troop_no", reg21, ":imod"),
+               # 2026-09-10: back up the real value off-troop too (see
+               # slot_player_coop_real_items_begin in module_constants.py)
+               # -- the troop's own copy gets polluted with foreign items
+               # later in the battle (traced to this mod's own Sarranid
+               # bot troop templates), so this is the only place the real
+               # value can still be trusted once that happens.
+               (store_add, ":real_item_slot", slot_player_coop_real_items_begin, reg21),
+               (store_add, ":real_mod_slot", slot_player_coop_real_mods_begin, reg21),
+               (player_set_slot, ":player_no", ":real_item_slot", ":item"),
+               (player_set_slot, ":player_no", ":real_mod_slot", ":imod"),
                (multiplayer_send_4_int_to_player, ":player_no", multiplayer_event_coop_send_to_player,
                    coop_event_battle_equipment_slot, reg21, ":item", ":imod"),
            (try_end),
@@ -10291,7 +10418,27 @@ coop_scripts = [
            (troop_get_inventory_slot, reg3, ":troop_no", 1),
            (troop_get_inventory_slot, reg4, ":troop_no", 2),
            (troop_get_inventory_slot, reg5, ":troop_no", 3),
-           (display_message, "@[EQUIP SNAPSHOT] {s1}: weapons={reg2},{reg3},{reg4},{reg5}"),
+           # Troop id added to the diagnostic (2026-09-10): a live
+           # [REEQUIP DEBUG] trigger later in the same battle reads slot 0
+           # as a DIFFERENT item (548) than what this line just wrote here
+           # (434) for the SAME player -- need to confirm whether that
+           # trigger is even looking at this same troop object at all.
+           (assign, reg6, ":troop_no"),
+           (display_message, "@[EQUIP SNAPSHOT] {s1}: troop={reg6} weapons={reg2},{reg3},{reg4},{reg5}"),
+           # Armor added 2026-09-10: user confirmed the campaign-map
+           # character DOES own a helmet, but battle-time [REEQUIP DEBUG]
+           # shows an unowned Sarranid cap (itm_sarranid_warrior_cap)
+           # instead -- and that item, together with the unowned
+           # kite-shield seen in the weapon slots, is traced to this mod's
+           # own "sarranid_footman_multiplayer_coop_tier_2" bot troop
+           # template (module_troops.py). This log never checked armor
+           # before, so there's no visibility into whether the real helmet
+           # even survives THIS load step, or is already gone by here.
+           (troop_get_inventory_slot, reg7, ":troop_no", ek_head),
+           (troop_get_inventory_slot, reg8, ":troop_no", ek_body),
+           (troop_get_inventory_slot, reg9, ":troop_no", ek_foot),
+           (troop_get_inventory_slot, reg10, ":troop_no", ek_gloves),
+           (display_message, "@[EQUIP SNAPSHOT] {s1}: troop={reg6} head={reg7} body={reg8} foot={reg9} gloves={reg10}"),
            (assign, reg0, 1),
        (else_try),
            (display_message, "@[EQUIP SNAPSHOT] no campaign equipment found for {s1}"),
@@ -13169,6 +13316,24 @@ coop_scripts = [
                     (call_script, "script_coop_char_local_enemy_get", ":player_no"),
                     (assign, ":enemy_party", reg0),
                     (call_script, "script_coop_char_local_enemy_set", ":player_no", 0),
+                    # Temporary diagnostic (2026-09-10): pins down exactly
+                    # why neither [A7] message below ever printed for a
+                    # confirmed win=1 local fight result.
+                    (assign, ":dbg_active", 0),
+                    (assign, ":dbg_type", -1),
+                    (try_begin),
+                        (gt, ":enemy_party", 0),
+                        (party_is_active, ":enemy_party"),
+                        (assign, ":dbg_active", 1),
+                        (party_get_slot, ":dbg_type", ":enemy_party", slot_party_type),
+                    (try_end),
+                    (assign, reg1, ":enemy_party"),
+                    (assign, reg2, ":dbg_active"),
+                    (assign, reg3, ":dbg_type"),
+                    (assign, reg4, spt_castle),
+                    (assign, reg5, spt_town),
+                    (assign, reg6, spt_village),
+                    (display_message, "@[A7 DEBUG] enemy_party={reg1} active={reg2} type={reg3} (castle={reg4} town={reg5} village={reg6})"),
                     (try_begin),
                         (le, ":enemy_party", 0),
                         (display_message, "@[A7] local win: no stashed opponent -- consequences skipped"),

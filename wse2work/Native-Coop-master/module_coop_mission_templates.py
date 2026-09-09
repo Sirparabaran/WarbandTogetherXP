@@ -709,8 +709,179 @@ coop_mission_templates = [
           (lt, ":team", multi_team_spectator),
           (player_get_troop_id, ":troop", ":player_no"),
           (ge, ":troop", 0),
+          # 2026-09-10, third attempt (see the two false starts this same
+          # day preserved in docs/flows/battle-pipeline.md row 6). Live
+          # diagnostic data (a repeating per-second [REEQUIP DEBUG] check,
+          # comparing the agent's live slots against the troop's real
+          # inventory) proved conclusively that agent_equip_item -- the
+          # post-spawn op coop_equip_player_agent uses for every slot --
+          # genuinely cannot mount a horse on an already-spawned agent: 20+
+          # consecutive per-second retries across 24 real seconds all
+          # failed identically (horse stayed 0 every single time), while
+          # the SAME retries correctly confirmed weapon slot 0 already
+          # matched. That rules out timing/class-selection-screen
+          # interference as the horse's cause specifically -- it's a real
+          # agent_equip_item limitation, not a race.
+          #
+          # This confirms attempt 1's mechanism (player_add_spawn_item,
+          # the native pre-spawn staging op "take effect after the next
+          # player_spawn_new_agent") was the right lever for the horse --
+          # attempt 1's regression (spear replacing the real weapon) came
+          # from staging ONLY the horse, leaving every weapon/armor slot
+          # "unselected" for native's own class-default-fill logic
+          # (script_multiplayer_buy_agent_equipment) to fill in. Staging
+          # every slot the player actually has real gear in this time,
+          # not just the horse, should leave nothing for that fill-in
+          # logic to act on.
+          #
+          # Attempt 4 (2026-09-10, same day): staging alone wasn't enough
+          # -- a live report showed the sword STILL downgraded to a spear
+          # and an unowned shield appeared. multiplayer_buy_agent_equipment
+          # (module_scripts.py) doesn't just fill in unselected categories;
+          # for a category that IS selected, it also checks affordability
+          # against player_get_gold -- a completely separate native
+          # multiplayer currency this coop mod has never touched, distinct
+          # from the campaign gold it does track via troop_gold. If it
+          # defaults to 0 for every connecting player, native would judge
+          # ANY real item "too expensive" and substitute the class's
+          # cheapest default instead -- a sword downgraded to a spear is
+          # exactly that substitution rule, not a random injection. Setting
+          # native MP gold to the display cap before staging means nothing
+          # real can ever be judged unaffordable.
+          (player_set_gold, ":player_no", multi_max_gold_that_can_be_stored, multi_max_gold_that_can_be_stored),
+          # Attempt 5 (2026-09-10, same day, REVERTED same day): tried
+          # staging every slot explicitly -- including -1 for genuinely
+          # empty ones -- on the theory that native's engine-level
+          # class-default fill only targets categories left "unselected".
+          # Live result: did NOT fix the lance/shield (still appeared
+          # identically), AND caused a new regression -- head armor went
+          # missing, which had never been a problem before. Staging an
+          # explicit -1 for a slot is not neutral; it actively suppresses
+          # native from equipping that category at all, including armor
+          # slots that legitimately should show whatever the troop
+          # currently has (a load-timing gap can make an armor slot read
+          # -1 at the exact moment this loop runs even for gear the player
+          # owns). Reverted to staging only slots that are genuinely
+          # occupied at staging time, same as attempt 3 -- net result of
+          # attempt 5 was strictly worse (new regression, zero fix), so it
+          # is not worth even a partial keep. The lance/shield root cause
+          # is still open; ruled out so far: agent/troop mismatch (they
+          # match), affordability (gold-capped, still happens), and now
+          # "leave nothing unselected" (staged everything, still happens
+          # identically) -- whatever writes those two items into the troop
+          # record is not something a pre-spawn staging change can prevent.
+          # 2026-09-10, same day: staging used to read straight from the
+          # troop record (troop_get_inventory_slot) -- but that's the exact
+          # record proven to get polluted with foreign items sometime after
+          # the equipment-load step (see the corrective trigger's own
+          # comment above for the sarranid_footman_multiplayer_coop_tier_2
+          # trace). Weapons can recover from a bad initial stage because
+          # the post-spawn corrective trigger uses an explicit weapon slot,
+          # which reliably re-equips on an already-spawned agent. Armor
+          # cannot: its post-spawn corrective call uses the same slot-less
+          # agent_equip_item form already proven unable to mount a horse on
+          # a live agent -- so a bad initial armor stage here has no
+          # fallback and just stays wrong all battle ("armor isn't synced")
+          # a live user report confirmed. Staging now reads from the same
+          # off-troop backup (slot_player_coop_real_items_begin) the
+          # corrective trigger trusts, so a polluted troop record can never
+          # leak into the initial stage for any slot, weapons or armor.
+          (try_for_range, ":stage_slot", ek_item_0, ek_horse + 1),
+              (store_add, ":stage_ritem_slot", slot_player_coop_real_items_begin, ":stage_slot"),
+              (player_get_slot, ":stage_item", ":player_no", ":stage_ritem_slot"),
+              # gt, not ge: an unset player slot defaults to 0 (unlike a
+              # troop inventory slot's -1-for-empty convention), so this
+              # must exclude 0 too or a backup that was never written would
+              # stage invalid item 0 instead of just skipping the slot.
+              (gt, ":stage_item", 0),
+              (player_add_spawn_item, ":player_no", ":stage_slot", ":stage_item"),
+          (try_end),
           (player_spawn_new_agent, ":player_no", 0),
           (player_set_slot, ":player_no", slot_player_spawned_this_round, 1),
+        (try_end),
+       ]),
+
+      # Corrective again (2026-09-10, replacing the diagnostic-only
+      # version from earlier the same day). Live data proved the troop's
+      # own persisted inventory gets polluted with foreign items sometime
+      # after spawn (itm_tab_shield_kite_b / itm_sarranid_warrior_cap and
+      # similar, traced to this mod's own "sarranid_footman_multiplayer_
+      # coop_tier_2" bot troop template, module_troops.py) -- so the troop
+      # record can no longer be trusted as the correction source; comparing
+      # agent-vs-troop (the old diagnostic) just showed two copies of the
+      # same pollution, never the player's real gear.
+      #
+      # Correction now compares the agent against the off-troop backup
+      # written once at equipment-load time into slot_player_coop_real_
+      # items_begin (module_constants.py, coop_battle_load_equipment_
+      # snapshot) -- storage the pollution can't reach.
+      #
+      # Fixes are targeted PER SLOT, not a full unequip-everything-then-
+      # requip-everything pass -- that full-reset approach (the original
+      # coop_equip_player_agent, used by the first corrective version of
+      # this trigger) is what caused the earlier confirmed regression
+      # where switching weapons mid-fight silently reverted to the first
+      # weapon within a second. Touching only the specific wrong slot
+      # leaves every other slot's state (including which weapon is
+      # currently drawn) alone. Horse is deliberately not handled here --
+      # agent_equip_item is proven unable to mount a horse on an
+      # already-spawned agent; that stays fixed by the pre-spawn
+      # player_add_spawn_item staging above.
+      (1, 0, 0,
+       [(multiplayer_is_server)],
+       [
+        (get_max_players, ":req_num_players"),
+        (try_for_range, ":req_player_no", 1, ":req_num_players"),
+            (player_is_active, ":req_player_no"),
+            (player_get_agent_id, ":req_agent_id", ":req_player_no"),
+            (ge, ":req_agent_id", 0),
+            (agent_is_alive, ":req_agent_id"),
+            # Weapon slots 0-3. Unequip/equip use slot+1 (weapon_slot),
+            # matching coop_equip_player_agent's own convention.
+            (try_for_range, ":req_slot", 0, 4),
+                (agent_get_item_slot, ":req_cur", ":req_agent_id", ":req_slot"),
+                (store_add, ":req_ritem_slot", slot_player_coop_real_items_begin, ":req_slot"),
+                (store_add, ":req_rmod_slot", slot_player_coop_real_mods_begin, ":req_slot"),
+                (player_get_slot, ":req_real", ":req_player_no", ":req_ritem_slot"),
+                (player_get_slot, ":req_real_mod", ":req_player_no", ":req_rmod_slot"),
+                (neq, ":req_cur", ":req_real"),
+                (store_add, ":req_wslot", ":req_slot", 1),
+                (try_begin),
+                    (gt, ":req_cur", 0),
+                    (agent_unequip_item, ":req_agent_id", ":req_cur", ":req_wslot"),
+                (try_end),
+                (try_begin),
+                    (ge, ":req_real", 0),
+                    (agent_equip_item, ":req_agent_id", ":req_real", ":req_wslot", ":req_real_mod"),
+                (try_end),
+                (str_store_player_username, s60, ":req_player_no"),
+                (assign, reg1, ":req_slot"), (assign, reg2, ":req_cur"), (assign, reg3, ":req_real"),
+                (display_message, "@[REEQUIP FIX] {s60} weapon slot {reg1}: {reg2} -> {reg3}"),
+            (try_end),
+            # Armor slots 4-7 (head/body/foot/gloves). Equip/unequip take
+            # no slot argument here -- same as coop_equip_player_agent's
+            # own armor loop, the engine infers the slot from item kind.
+            (try_for_range, ":req_slot", ek_head, ek_gloves + 1),
+                (agent_get_item_slot, ":req_cur", ":req_agent_id", ":req_slot"),
+                (store_add, ":req_ritem_slot", slot_player_coop_real_items_begin, ":req_slot"),
+                (store_add, ":req_rmod_slot", slot_player_coop_real_mods_begin, ":req_slot"),
+                (player_get_slot, ":req_real", ":req_player_no", ":req_ritem_slot"),
+                (player_get_slot, ":req_real_mod", ":req_player_no", ":req_rmod_slot"),
+                (neq, ":req_cur", ":req_real"),
+                (try_begin),
+                    (gt, ":req_cur", 0),
+                    (agent_unequip_item, ":req_agent_id", ":req_cur"),
+                (try_end),
+                (try_begin),
+                    (ge, ":req_real", 0),
+                    (agent_equip_item, ":req_agent_id", ":req_real"),
+                    (neg|is_vanilla_warband),
+                    (agent_set_item_slot_modifier, ":req_agent_id", ":req_slot", ":req_real_mod"),
+                (try_end),
+                (str_store_player_username, s60, ":req_player_no"),
+                (assign, reg1, ":req_slot"), (assign, reg2, ":req_cur"), (assign, reg3, ":req_real"),
+                (display_message, "@[REEQUIP FIX] {s60} armor slot {reg1}: {reg2} -> {reg3}"),
+            (try_end),
         (try_end),
        ]),
 
@@ -4935,11 +5106,172 @@ coop_mission_templates = [
           (lt, ":team", multi_team_spectator),
           (player_get_troop_id, ":troop", ":player_no"),
           (ge, ":troop", 0),
+          # 2026-09-10, third attempt (see the two false starts this same
+          # day preserved in docs/flows/battle-pipeline.md row 6). Live
+          # diagnostic data (a repeating per-second [REEQUIP DEBUG] check,
+          # comparing the agent's live slots against the troop's real
+          # inventory) proved conclusively that agent_equip_item -- the
+          # post-spawn op coop_equip_player_agent uses for every slot --
+          # genuinely cannot mount a horse on an already-spawned agent: 20+
+          # consecutive per-second retries across 24 real seconds all
+          # failed identically (horse stayed 0 every single time), while
+          # the SAME retries correctly confirmed weapon slot 0 already
+          # matched. That rules out timing/class-selection-screen
+          # interference as the horse's cause specifically -- it's a real
+          # agent_equip_item limitation, not a race.
+          #
+          # This confirms attempt 1's mechanism (player_add_spawn_item,
+          # the native pre-spawn staging op "take effect after the next
+          # player_spawn_new_agent") was the right lever for the horse --
+          # attempt 1's regression (spear replacing the real weapon) came
+          # from staging ONLY the horse, leaving every weapon/armor slot
+          # "unselected" for native's own class-default-fill logic
+          # (script_multiplayer_buy_agent_equipment) to fill in. Staging
+          # every slot the player actually has real gear in this time,
+          # not just the horse, should leave nothing for that fill-in
+          # logic to act on.
+          #
+          # Attempt 4 (2026-09-10, same day): staging alone wasn't enough
+          # -- a live report showed the sword STILL downgraded to a spear
+          # and an unowned shield appeared. multiplayer_buy_agent_equipment
+          # (module_scripts.py) doesn't just fill in unselected categories;
+          # for a category that IS selected, it also checks affordability
+          # against player_get_gold -- a completely separate native
+          # multiplayer currency this coop mod has never touched, distinct
+          # from the campaign gold it does track via troop_gold. If it
+          # defaults to 0 for every connecting player, native would judge
+          # ANY real item "too expensive" and substitute the class's
+          # cheapest default instead -- a sword downgraded to a spear is
+          # exactly that substitution rule, not a random injection. Setting
+          # native MP gold to the display cap before staging means nothing
+          # real can ever be judged unaffordable.
+          (player_set_gold, ":player_no", multi_max_gold_that_can_be_stored, multi_max_gold_that_can_be_stored),
+          # Attempt 5 (2026-09-10, same day, REVERTED same day): tried
+          # staging every slot explicitly -- including -1 for genuinely
+          # empty ones -- on the theory that native's engine-level
+          # class-default fill only targets categories left "unselected".
+          # Live result: did NOT fix the lance/shield (still appeared
+          # identically), AND caused a new regression -- head armor went
+          # missing, which had never been a problem before. Staging an
+          # explicit -1 for a slot is not neutral; it actively suppresses
+          # native from equipping that category at all, including armor
+          # slots that legitimately should show whatever the troop
+          # currently has (a load-timing gap can make an armor slot read
+          # -1 at the exact moment this loop runs even for gear the player
+          # owns). Reverted to staging only slots that are genuinely
+          # occupied at staging time, same as attempt 3 -- net result of
+          # attempt 5 was strictly worse (new regression, zero fix), so it
+          # is not worth even a partial keep. The lance/shield root cause
+          # is still open; ruled out so far: agent/troop mismatch (they
+          # match), affordability (gold-capped, still happens), and now
+          # "leave nothing unselected" (staged everything, still happens
+          # identically) -- whatever writes those two items into the troop
+          # record is not something a pre-spawn staging change can prevent.
+          # 2026-09-10, same day: staging used to read straight from the
+          # troop record (troop_get_inventory_slot) -- but that's the exact
+          # record proven to get polluted with foreign items sometime after
+          # the equipment-load step (see the corrective trigger's own
+          # comment above for the sarranid_footman_multiplayer_coop_tier_2
+          # trace). Weapons can recover from a bad initial stage because
+          # the post-spawn corrective trigger uses an explicit weapon slot,
+          # which reliably re-equips on an already-spawned agent. Armor
+          # cannot: its post-spawn corrective call uses the same slot-less
+          # agent_equip_item form already proven unable to mount a horse on
+          # a live agent -- so a bad initial armor stage here has no
+          # fallback and just stays wrong all battle ("armor isn't synced")
+          # a live user report confirmed. Staging now reads from the same
+          # off-troop backup (slot_player_coop_real_items_begin) the
+          # corrective trigger trusts, so a polluted troop record can never
+          # leak into the initial stage for any slot, weapons or armor.
+          (try_for_range, ":stage_slot", ek_item_0, ek_horse + 1),
+              (store_add, ":stage_ritem_slot", slot_player_coop_real_items_begin, ":stage_slot"),
+              (player_get_slot, ":stage_item", ":player_no", ":stage_ritem_slot"),
+              # gt, not ge: an unset player slot defaults to 0 (unlike a
+              # troop inventory slot's -1-for-empty convention), so this
+              # must exclude 0 too or a backup that was never written would
+              # stage invalid item 0 instead of just skipping the slot.
+              (gt, ":stage_item", 0),
+              (player_add_spawn_item, ":player_no", ":stage_slot", ":stage_item"),
+          (try_end),
           (player_spawn_new_agent, ":player_no", 0),
           (player_set_slot, ":player_no", slot_player_spawned_this_round, 1),
         (try_end),
        ]),
 
+      # Diagnostic-only, no longer corrective (fixed 2026-09-10, same day
+      # as it was added). This used to call coop_equip_player_agent every
+      # second on any mismatch -- confirmed live to be a real regression:
+      # coop_equip_player_agent's "unequip everything, re-equip from
+      # inventory slot order" approach also resets whichever weapon the
+      # player currently has drawn back to their first slot, so as long as
+      # the horse mismatch below persisted (every second, before the
+      # player_add_spawn_item staging fix landed), ANY manual weapon
+      # switch got silently undone within a second. The real fix is now
+      # the pre-spawn player_add_spawn_item staging above -- this trigger
+      # stays only to confirm (via log, taking no action) whether a
+      # mismatch still happens at all, without being able to interfere
+      # with weapon switching ever again. Safe to delete once the horse
+      # fix is confirmed and this stops logging anything.
+      #
+      # (This siege-template copy had drifted out of sync with
+      # mt_coop_battle's own copy -- still using the broken ti_once timing
+      # and the corrective re-equip call that causes the weapon-reset
+      # regression. Brought back in line 2026-09-10.)
+      (1, 0, 0,
+       [(multiplayer_is_server)],
+       [
+        (get_max_players, ":req_num_players"),
+        (try_for_range, ":req_player_no", 1, ":req_num_players"),
+            (player_is_active, ":req_player_no"),
+            (player_get_agent_id, ":req_agent_id", ":req_player_no"),
+            (ge, ":req_agent_id", 0),
+            (agent_is_alive, ":req_agent_id"),
+            (player_get_troop_id, ":req_troop", ":req_player_no"),
+            (agent_get_item_slot, ":req_a0", ":req_agent_id", 0),
+            (agent_get_item_slot, ":req_a1", ":req_agent_id", 1),
+            (agent_get_item_slot, ":req_a2", ":req_agent_id", 2),
+            (agent_get_item_slot, ":req_a3", ":req_agent_id", 3),
+            (agent_get_item_slot, ":req_ah", ":req_agent_id", ek_horse),
+            # Armor added 2026-09-10: a live report showed head armor
+            # missing after attempt 5 (staging -1 explicitly for empty
+            # slots) -- previously never checked, no visibility at all
+            # into whether armor slots mismatch the same way weapons do.
+            (agent_get_item_slot, ":req_ahead", ":req_agent_id", ek_head),
+            (agent_get_item_slot, ":req_abody", ":req_agent_id", ek_body),
+            (agent_get_item_slot, ":req_afoot", ":req_agent_id", ek_foot),
+            (agent_get_item_slot, ":req_agl", ":req_agent_id", ek_gloves),
+            (troop_get_inventory_slot, ":req_t0", ":req_troop", 0),
+            (troop_get_inventory_slot, ":req_t1", ":req_troop", 1),
+            (troop_get_inventory_slot, ":req_t2", ":req_troop", 2),
+            (troop_get_inventory_slot, ":req_t3", ":req_troop", 3),
+            (troop_get_inventory_slot, ":req_th", ":req_troop", ek_horse),
+            (troop_get_inventory_slot, ":req_thead", ":req_troop", ek_head),
+            (troop_get_inventory_slot, ":req_tbody", ":req_troop", ek_body),
+            (troop_get_inventory_slot, ":req_tfoot", ":req_troop", ek_foot),
+            (troop_get_inventory_slot, ":req_tgl", ":req_troop", ek_gloves),
+            (try_begin),
+                (this_or_next|neq, ":req_a0", ":req_t0"),
+                (this_or_next|neq, ":req_a1", ":req_t1"),
+                (this_or_next|neq, ":req_a2", ":req_t2"),
+                (this_or_next|neq, ":req_a3", ":req_t3"),
+                (this_or_next|neq, ":req_ah", ":req_th"),
+                (this_or_next|neq, ":req_ahead", ":req_thead"),
+                (this_or_next|neq, ":req_abody", ":req_tbody"),
+                (this_or_next|neq, ":req_afoot", ":req_tfoot"),
+                (neq, ":req_agl", ":req_tgl"),
+                (str_store_player_username, s60, ":req_player_no"),
+                (assign, reg1, ":req_troop"),
+                (assign, reg2, ":req_a0"), (assign, reg3, ":req_a1"), (assign, reg4, ":req_a2"), (assign, reg5, ":req_a3"), (assign, reg6, ":req_ah"),
+                (display_message, "@[REEQUIP DEBUG] {s60} troop={reg1} AGENT: wpn={reg2},{reg3},{reg4},{reg5} horse={reg6}"),
+                (assign, reg2, ":req_ahead"), (assign, reg3, ":req_abody"), (assign, reg4, ":req_afoot"), (assign, reg5, ":req_agl"),
+                (display_message, "@[REEQUIP DEBUG] {s60} troop={reg1} AGENT: head={reg2} body={reg3} foot={reg4} gloves={reg5}"),
+                (assign, reg2, ":req_t0"), (assign, reg3, ":req_t1"), (assign, reg4, ":req_t2"), (assign, reg5, ":req_t3"), (assign, reg6, ":req_th"),
+                (display_message, "@[REEQUIP DEBUG] {s60} troop={reg1} TROOP: wpn={reg2},{reg3},{reg4},{reg5} horse={reg6} -- NOT correcting (diagnostic only)"),
+                (assign, reg2, ":req_thead"), (assign, reg3, ":req_tbody"), (assign, reg4, ":req_tfoot"), (assign, reg5, ":req_tgl"),
+                (display_message, "@[REEQUIP DEBUG] {s60} troop={reg1} TROOP: head={reg2} body={reg3} foot={reg4} gloves={reg5}"),
+            (try_end),
+        (try_end),
+       ]),
 
 #multiplayer_server_spawn_bots
       (0, 0, 0, [],

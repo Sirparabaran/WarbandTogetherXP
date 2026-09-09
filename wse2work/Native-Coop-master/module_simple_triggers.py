@@ -5113,6 +5113,33 @@ simple_triggers = [
           (jump_to_menu, "mnu_coop_claim_battle_loot"),
       (try_end),
 
+      # 2026-09-10: consume the delayed local-fight return-to-campaign arm
+      # (see $g_coop_local_return_pending -- set instead of
+      # $g_coop_return_to_campaign directly by every local-fight win/loss/
+      # retreat trigger in module_mission_templates.py). Every one of those
+      # triggers used to arm the real flag immediately, right before
+      # finish_mission -- but the ASI's background thread polls that flag
+      # every ~500 ms and starts the auto-reconnect hop as soon as it sees
+      # it, with no guarantee the client has even reached (let alone
+      # rendered) mnu_coop_local_battle_debrief yet. Net effect matching
+      # the user's report exactly: Tab reconnects, but the debrief/loot
+      # menu is never actually seen -- the reconnect races ahead of it.
+      # This mirrors the proven dedicated-battle pattern (coop_battle_
+      # check_round_end arms its own kick's reconnect flag with a delay
+      # "so the event has the kick handler's ~10s delay to deliver") --
+      # same idea, shorter delay, since there's no server-side kick to wait
+      # on here, just the menu's own render + a moment to read it. The
+      # debrief menu's "Continue" button still arms the real flag directly
+      # and immediately on click -- this countdown is only the fallback for
+      # players who don't click it (including a genuine mid-menu disconnect,
+      # the original case this early-arm was added to fix).
+      (try_begin),
+          (gt, "$g_coop_local_return_pending", 0),
+          (val_sub, "$g_coop_local_return_pending", 1),
+          (eq, "$g_coop_local_return_pending", 0),
+          (assign, "$g_coop_return_to_campaign", 1),
+      (try_end),
+
       # Battle rewards are granted by the campaign server first. Delay the
       # client-side confirmation menu until the player is back on the map,
       # because dedicated-battle reconnect packets can arrive during loading.

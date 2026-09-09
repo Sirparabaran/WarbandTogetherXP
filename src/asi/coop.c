@@ -189,8 +189,46 @@ static DWORD WINAPI s59_writer_thread(LPVOID param) {
     (void)param;
     while (1) {
         Sleep(500);
-        flush_result_string_to_file();
-        republish_pending_local_result();
+        /* 2026-09-10: this call reads $g_coop_result_ready, which the
+           debrief script sets to 1 at exactly the moment a local fight's
+           mission tears down -- the same module-globals-vector
+           reallocation window that already proved capable of crashing
+           this same background thread once this session (see the SEH
+           guard on republish_pending_local_result below, added after a
+           live EXCEPTION_ACCESS_VIOLATION report). This call was never
+           guarded, and a live report of the local-fight result never
+           reaching the server (no [A7 DEBUG] output at all -- not even a
+           wrong branch, just silence) matches a poll tick dying here
+           mid-read and never recovering: an unhandled access violation on
+           a poll thread doesn't just skip a tick, it can take the whole
+           thread down, silently ending every periodic job it does
+           (flush_result_string_to_file, republish_pending_local_result,
+           force_browser_lan_default, steam_reaim_host_ip, the return-
+           campaign arm) for the rest of the session. */
+        __try {
+            flush_result_string_to_file();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            coop_log("[flush_result] caught access violation during modglobals reallocation window -- skipped this tick\n");
+        }
+        /* modglobals.h's own contract: "SEH guarding against the
+           reallocation window stays at hostile-context call sites (poll
+           threads), not here". republish_pending_local_result() added a
+           second, denser burst of modglobals_get/set calls every tick
+           (previously only the Steam-acctid/return-campaign single
+           get/set below did this) -- live user report: a hard
+           EXCEPTION_ACCESS_VIOLATION (read from a garbage address, the
+           signature of a stale vector pointer from a same-moment
+           reallocation -- e.g. entering a new local mission, which wipes
+           module globals) started appearing specifically after this call
+           was added, having reportedly worked before it existed. Guarded
+           the same day flush_result_string_to_file() above was (a second,
+           independently-reported symptom of the identical unguarded-poll-
+           thread class -- see that call's own comment). */
+        __try {
+            republish_pending_local_result();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            coop_log("[republish] caught access violation during modglobals reallocation window -- skipped this tick\n");
+        }
         force_browser_lan_default();
         { /* Check s0 initialized */
             char *s0 = (char *)STRING_REG_BASE;

@@ -2204,6 +2204,20 @@ slot_player_coop_loot_modifiers_begin             = 614
 slot_player_coop_loot_modifiers_end               = 626
 slot_player_coop_loot_delivery_state              = 627 # 1=queue post-reconnect delivery, 2=delivered
 
+# 2026-09-10: a stable, off-troop backup of the player's real battle
+# loadout (9 slots, ek_item_0..ek_horse indices 0-8), written once right
+# after coop_battle_load_equipment_snapshot loads the real campaign gear.
+# Needed because the troop record itself gets polluted with foreign items
+# (traced to this mod's own Sarranid bot troop templates, e.g.
+# itm_tab_shield_kite_b / itm_sarranid_warrior_cap) sometime after that
+# load -- once that happens, troop_get_inventory_slot can no longer be
+# trusted as the "real" value to restore, so the real values must be kept
+# somewhere the pollution can't reach.
+slot_player_coop_real_items_begin                 = 628
+slot_player_coop_real_items_end                   = 637
+slot_player_coop_real_mods_begin                  = 637
+slot_player_coop_real_mods_end                    = 646
+
 # Coop player slot -- which troop the player has selected for the battle
 # Slots 40-48 are used by invasion mode (ccoop); 49 is free
 slot_player_coop_selected_troop                   = 49
