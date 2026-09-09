@@ -7926,6 +7926,15 @@ coop_scripts = [
   ("coop_reclaim_own_player_kingdom", [
     (store_script_param, ":player_no", 1),
     (player_get_troop_id, ":my_troop", ":player_no"),
+    # Fixed 2026-09-10: the 0.5s poll below calls this for every
+    # player_is_active connection, but "active" only means "occupies a
+    # player slot" -- a player still mid-connect/character-creation (no
+    # hydrated troop yet) has ":my_troop" == -1, and every op below that
+    # takes a troop id threw "SCRIPT ERROR: Invalid Troop ID: -1" every
+    # single tick for as long as that state persisted (flooding the log
+    # and, per a live user report, visibly freezing an unrelated encounter
+    # popup -- almost certainly the message-queue backup from that flood).
+    (ge, ":my_troop", 0),
     (troop_get_slot, ":my_cur_faction", ":my_troop", slot_troop_coop_faction),
     (try_begin),
         (is_between, ":my_cur_faction", coop_player_kingdoms_begin, coop_player_kingdoms_end),
@@ -12469,6 +12478,15 @@ coop_scripts = [
 	    (else_try),
 	        (game_in_multiplayer_mode),
 	        (multiplayer_get_my_player, ":my_player"),
+	        # Fixed 2026-09-10: seen live as "SCRIPT ERROR: Invalid Player ID:
+	        # -1" right as an encounter menu was tearing down mid-transition
+	        # (e.g. leaving a settlement straight into a wilderness battle) --
+	        # multiplayer_get_my_player briefly has no valid context to
+	        # return during that transition. This is a client-side
+	        # visibility gate only, so failing safe (not owned) here is
+	        # harmless -- every server-side apply script re-validates
+	        # ownership independently regardless of what this returns.
+	        (ge, ":my_player", 0),
 	        (player_get_troop_id, ":my_troop", ":my_player"),
 	        (party_slot_eq, ":center_no", slot_town_lord, ":my_troop"),
 	        (assign, ":owned", 1),

@@ -752,6 +752,30 @@ new 0.5s `simple_triggers.py` poll now calls it for every connected player
 unconditionally -- converges within a second of the fix actually being
 live, independent of exactly how or when a session came to be connected.
 
+**Real bug from that poll, found live (fixed 2026-09-10): flooded the
+server log with "SCRIPT ERROR: Invalid Troop ID: -1" every 0.5s and
+visibly froze an unrelated encounter popup.** `try_for_players` +
+`player_is_active` only means "this player slot is occupied by a
+connection" -- a player mid-connect/character-creation (no hydrated troop
+yet) is still "active" but `player_get_troop_id` returns `-1` for them,
+and every subsequent op in `coop_reclaim_own_player_kingdom` that takes a
+troop id threw for as long as that state persisted, every single tick.
+Fixed with a `(ge, ":my_troop", 0)` guard right after resolving the troop
+id -- a bare failing condition at a script's top level (not nested in a
+`try_begin`) stops the rest of that call, same as any other op in this
+codebase's many bare-condition-guard scripts. The message-spam itself
+is the most likely explanation for the frozen battle popup reported
+alongside it, not a separate bug.
+
+A second, unrelated "SCRIPT ERROR: Invalid Player ID: -1" surfaced from
+`coop_is_center_owner` in the same report, caught live at the exact moment
+an encounter menu was tearing down mid-transition (leaving a settlement
+straight into a wilderness battle) -- `multiplayer_get_my_player` briefly
+has no valid context to return during that transition. Fixed the same way
+(`(ge, ":my_player", 0)` guard) -- safe to fail closed here since this is
+a client-side visibility gate only; every server-side apply script
+re-validates ownership independently regardless.
+
 Two things surfaced while building this:
 
 - **Unsworn captors previously got no personal ownership at all.** Fixed

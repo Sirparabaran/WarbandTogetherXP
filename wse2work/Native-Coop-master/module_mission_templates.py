@@ -1866,7 +1866,19 @@ mission_templates = [
         ]),
       (ti_before_mission_start, 0, 0, [], [(call_script, "script_change_banners_and_chest")]),
       (ti_inventory_key_pressed, 0, 0, [(set_trigger_result,1)], []),
+      # Fixed 2026-09-10: this native template had no coop-aware Tab exit at
+      # all (unlike town_default/town_center/castle_visit, which each gate
+      # on $g_coop_in_local_visit and call script_coop_local_visit_exit
+      # before finish_mission). Whatever made Tab still appear to return to
+      # the settlement menu here did so without ever running that cleanup
+      # -- local_visit_done never reached the server, $g_coop_in_local_visit
+      # stayed stuck at 1, and the auto-reconnect safety net armed in that
+      # cleanup never got a chance to fire either. Same fix, same pattern.
       (ti_tab_pressed, 0, 0, [(try_begin),
+                                (eq, "$g_coop_in_local_visit", 1),
+                                (call_script, "script_coop_local_visit_exit"),
+                                (finish_mission, 0),
+                              (else_try),
                                 (check_quest_active, "qst_hunt_down_fugitive"),
                                 (neg|check_quest_succeeded, "qst_hunt_down_fugitive"),
                                 (neg|check_quest_failed, "qst_hunt_down_fugitive"),
@@ -1877,8 +1889,10 @@ mission_templates = [
                                 (else_try),
                                   (call_script, "script_succeed_quest", "qst_hunt_down_fugitive"),
                                 (try_end),
-                              (try_end),
-                              (set_trigger_result,1)], []),
+                                (set_trigger_result,1),
+                              (else_try),
+                                (set_trigger_result,1),
+                              (try_end)], []),
       (ti_on_leave_area, 0, 0, [
           (try_begin),
             (assign,"$g_leave_town",1),
