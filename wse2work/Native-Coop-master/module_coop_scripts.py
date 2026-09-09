@@ -7904,11 +7904,77 @@ coop_scripts = [
                   (call_script, "script_coop_save_character", ":player_no"),
                   (call_script, "script_coop_send_char_sync_to_client", ":player_no"),
               (try_end),
+              (call_script, "script_coop_world_save_player_kingdom", ":slot_faction"),
               (display_message, "@[FACTION] {s1} automatically founded {s11} by capturing a settlement."),
               (assign, reg0, ":slot_faction"),
           (try_end),
       (try_end),
     ]),
+
+  # Player-kingdom self-heal (added 2026-09-10) -- called from
+  # coop_player_hydrate right after coop_load_character restores
+  # slot_troop_coop_faction. If this player's own persisted membership
+  # points at a player-kingdom pool slot that's currently INACTIVE (the
+  # faction lost its active/name/owner state on this boot -- either an
+  # orphaned kingdom founded before coop_world_save_player_kingdom
+  # existed, so no @pk record was ever written, or simply the true owner
+  # reconnecting to a slot no one has claimed yet this boot), reactivate
+  # and rename it using this player's own identity -- but only when no
+  # OTHER identity is already recorded as the real owner, so a mere member
+  # can never accidentally steal a kingdom out from under its actual
+  # founder.
+  ("coop_reclaim_own_player_kingdom", [
+    (store_script_param, ":player_no", 1),
+    (player_get_troop_id, ":my_troop", ":player_no"),
+    (troop_get_slot, ":my_cur_faction", ":my_troop", slot_troop_coop_faction),
+    (try_begin),
+        (is_between, ":my_cur_faction", coop_player_kingdoms_begin, coop_player_kingdoms_end),
+        (neg|faction_slot_eq, ":my_cur_faction", slot_faction_state, sfs_active),
+
+        (player_get_slot, ":my_acctid", ":player_no", slot_player_coop_steam_acctid),
+        (str_store_player_username, s39, ":player_no"),
+        (store_sub, ":pk_idx3", ":my_cur_faction", coop_player_kingdoms_begin),
+        (assign, reg9, ":pk_idx3"),
+
+        (str_store_string, s33, "@coop_world"),
+        (dict_create, "$coop_world_dict"),
+        (dict_load_file, "$coop_world_dict", s33, 1),
+        (assign, ":pk_should_adopt", 0),
+        (try_begin),
+            (dict_has_key, "$coop_world_dict", "@pk{reg9}_owner_acctid"),
+            (dict_get_int, ":pk_rec_acctid", "$coop_world_dict", "@pk{reg9}_owner_acctid", 0),
+            (dict_get_str, s38, "$coop_world_dict", "@pk{reg9}_owner_name"),
+            (try_begin),
+                (neq, ":my_acctid", 0),
+                (eq, ":pk_rec_acctid", ":my_acctid"),
+                (assign, ":pk_should_adopt", 1),
+            (else_try),
+                (eq, ":my_acctid", 0),
+                (eq, ":pk_rec_acctid", 0),
+                (str_compare, ":pk_cmp4", s38, s39),
+                (eq, ":pk_cmp4", 0),
+                (assign, ":pk_should_adopt", 1),
+            (try_end),
+        (else_try),
+            # No record at all -- an orphaned kingdom from before
+            # coop_world_save_player_kingdom existed. Our own char dict
+            # already says we belong here, and nothing else claims it.
+            (assign, ":pk_should_adopt", 1),
+        (try_end),
+        (dict_free, "$coop_world_dict"),
+
+        (eq, ":pk_should_adopt", 1),
+        (faction_set_slot, ":my_cur_faction", slot_faction_state, sfs_active),
+        (faction_set_slot, ":my_cur_faction", slot_faction_coop_owner_troop, ":my_troop"),
+        (faction_set_slot, ":my_cur_faction", slot_faction_leader, ":my_troop"),
+        (str_store_troop_name, s1, ":my_troop"),
+        (str_store_string, s11, "@Kingdom of {s1}"),
+        (faction_set_name, ":my_cur_faction", s11),
+        (call_script, "script_coop_world_save_player_kingdom", ":my_cur_faction"),
+        (assign, reg1, ":my_cur_faction"),
+        (display_message, "@[FACTION] {s39} self-healed ownership of player-kingdom faction={reg1} as {s11}"),
+    (try_end),
+  ]),
 
   # Vassalage Phase 5 -- player-founded factions. Fixed pool of 4
   # normally-inactive factions (player_faction_1..4, module_factions.py),
@@ -7960,6 +8026,7 @@ coop_scripts = [
           (player_set_slot, ":player_no", slot_player_coop_char_dirty, ":dirty"),
           (call_script, "script_coop_save_character", ":player_no"),
           (call_script, "script_coop_send_char_sync_to_client", ":player_no"),
+          (call_script, "script_coop_world_save_player_kingdom", ":slot_faction"),
           (display_message, "@[FACTION] {s10} has founded {s11}."),
       (else_try),
           (display_message, "@[FACTION] rejected found-kingdom request from {s10} (already own one, or no free slot)"),
@@ -7985,6 +8052,7 @@ coop_scripts = [
               (faction_set_slot, ":cur_faction", slot_faction_coop_owner_troop, -1),
               (faction_set_slot, ":cur_faction", slot_faction_state, sfs_inactive),
               (faction_set_slot, ":cur_faction", slot_faction_leader, -1),
+              (call_script, "script_coop_world_save_player_kingdom", ":cur_faction"),
               (display_message, "@[FACTION] {s10} has disbanded their kingdom."),
           (else_try),
               (display_message, "@[FACTION] {s10} has left their faction."),
@@ -10318,6 +10386,16 @@ coop_scripts = [
        (call_script, "script_coop_load_character", ":player_no"),
        (assign, ":char_loaded", reg0),
 
+       # Player-kingdom self-heal (added 2026-09-10): coop_world_reclaim_for_player
+       # above already ran, but slot_troop_coop_faction (@char_faction) is
+       # only known AFTER this load call -- must run after, not folded into
+       # the reclaim above. Recovers a kingdom founded before the player-
+       # kingdom persistence fix existed (no world-dict record at all yet,
+       # so coop_world_load_startup had nothing to reactivate/rename at
+       # boot) as well as the ordinary case of the real owner reconnecting
+       # to a still-inactive slot.
+       (call_script, "script_coop_reclaim_own_player_kingdom", ":player_no"),
+
        # Hydration state (issue #15): ready only after a successful load; a
        # dict-less join stays in creation state until char creation completes.
        (try_begin),
@@ -12002,6 +12080,55 @@ coop_scripts = [
 	# be correct for whichever identity is asking, which reclaim-at-hydrate
 	# below guarantees for anyone who has connected at least once.
 	#
+	# Persists a player-founded kingdom's runtime state (active flag, name,
+	# owner identity) -- fixed 2026-09-10: player-kingdom factions were never
+	# saved/restored at all, only which faction a CENTER belongs to was.
+	# After a restart, a captured castle correctly pointed back at its
+	# player-kingdom faction id, but that faction itself booted in its
+	# default template state (inactive, raw placeholder name
+	# "{!}Player Kingdom N") since nothing ever reactivated/renamed it --
+	# the map tooltip showed the literal module_factions.py default.
+	("coop_world_save_player_kingdom",
+	  [
+	    (store_script_param, ":faction_id", 1),
+	    (try_begin),
+	        (is_between, ":faction_id", coop_player_kingdoms_begin, coop_player_kingdoms_end),
+	        (store_sub, ":idx", ":faction_id", coop_player_kingdoms_begin),
+	        (assign, reg9, ":idx"),
+
+	        (assign, ":is_active", 0),
+	        (assign, ":owner_acctid", 0),
+	        (str_clear, s36),
+	        (str_clear, s37),
+	        (try_begin),
+	            (faction_slot_eq, ":faction_id", slot_faction_state, sfs_active),
+	            (assign, ":is_active", 1),
+	            (faction_get_slot, ":owner_troop", ":faction_id", slot_faction_coop_owner_troop),
+	            (is_between, ":owner_troop", multiplayer_campaign_player_troops_begin, multiplayer_campaign_player_troops_end),
+	            (store_sub, ":owner_player", ":owner_troop", multiplayer_campaign_player_troops_begin),
+	            (player_is_active, ":owner_player"),
+	            (player_get_slot, ":owner_acctid", ":owner_player", slot_player_coop_steam_acctid),
+	            (try_begin),
+	                (eq, ":owner_acctid", 0),
+	                (str_store_player_username, s36, ":owner_player"),
+	            (try_end),
+	            (str_store_faction_name, s37, ":faction_id"),
+	        (try_end),
+
+	        (str_store_string, s33, "@coop_world"),
+	        (dict_create, "$coop_world_dict"),
+	        (dict_load_file, "$coop_world_dict", s33, 1),
+	        (dict_set_int, "$coop_world_dict", "@pk{reg9}_active", ":is_active"),
+	        (dict_set_int, "$coop_world_dict", "@pk{reg9}_owner_acctid", ":owner_acctid"),
+	        (dict_set_str, "$coop_world_dict", "@pk{reg9}_owner_name", s36),
+	        (dict_set_str, "$coop_world_dict", "@pk{reg9}_name", s37),
+	        (dict_save, "$coop_world_dict", s33),
+	        (dict_free, "$coop_world_dict"),
+	        (assign, reg1, ":faction_id"), (assign, reg2, ":is_active"), (assign, reg3, ":owner_acctid"),
+	        (display_message, "@[WORLD SAVE] player-kingdom faction={reg1} active={reg2} owner_acctid={reg3} owner_name={s36} name={s37}"),
+	    (try_end),
+	  ]),
+
 	# Gathers one center's current live state and writes it.
 	("coop_world_save_center",
 	  [
@@ -12069,6 +12196,23 @@ coop_scripts = [
 	    (dict_set_int, "$coop_world_dict", "@c{reg9}_constr_id", ":constr_id"),
 	    (dict_set_int, "$coop_world_dict", "@c{reg9}_constr_hours_left", ":constr_hours_left"),
 
+	    # Garrison composition (fixed 2026-09-10): a settlement's actual
+	    # troop stacks were never persisted at all -- reinforce/withdraw/
+	    # deposit all mutate the live party but never called this script, so
+	    # a restart silently reset every garrison back to native's own
+	    # default composition. Cap of 20 stacks is generous headroom over
+	    # native's usual handful of troop tiers per settlement.
+	    (party_get_num_companion_stacks, ":garr_num_stacks", ":center_no"),
+	    (val_min, ":garr_num_stacks", 20),
+	    (dict_set_int, "$coop_world_dict", "@c{reg9}_garr_count", ":garr_num_stacks"),
+	    (try_for_range, ":garr_i", 0, ":garr_num_stacks"),
+	        (party_stack_get_troop_id, ":garr_troop", ":center_no", ":garr_i"),
+	        (party_stack_get_size, ":garr_count", ":center_no", ":garr_i"),
+	        (assign, reg8, ":garr_i"),
+	        (dict_set_int, "$coop_world_dict", "@c{reg9}_garr{reg8}_troop", ":garr_troop"),
+	        (dict_set_int, "$coop_world_dict", "@c{reg9}_garr{reg8}_count", ":garr_count"),
+	    (try_end),
+
 	    (dict_save, "$coop_world_dict", s33),
 	    (dict_free, "$coop_world_dict"),
 	    (str_store_party_name, s34, ":center_no"),
@@ -12135,10 +12279,62 @@ coop_scripts = [
 	                (store_add, ":new_end_hour", ":cur_hours", ":constr_hours_left"),
 	                (party_set_slot, ":center_no", slot_center_improvement_end_hour, ":new_end_hour"),
 	            (try_end),
+
+	            # Garrison composition (fixed 2026-09-10, paired with the save
+	            # side above). Only restore if a record was actually saved
+	            # (has_key) -- a center saved before this fix has no
+	            # @c{id}_garr_count key at all, so its native default
+	            # garrison is correctly left untouched rather than cleared to
+	            # empty.
+	            (try_begin),
+	                (dict_has_key, "$coop_world_startup_dict", "@c{reg9}_garr_count"),
+	                (dict_get_int, ":garr_num_stacks", "$coop_world_startup_dict", "@c{reg9}_garr_count", 0),
+	                (party_clear, ":center_no"),
+	                (try_for_range, ":garr_i", 0, ":garr_num_stacks"),
+	                    (assign, reg8, ":garr_i"),
+	                    (dict_get_int, ":garr_troop", "$coop_world_startup_dict", "@c{reg9}_garr{reg8}_troop", -1),
+	                    (dict_get_int, ":garr_count", "$coop_world_startup_dict", "@c{reg9}_garr{reg8}_count", 0),
+	                    (try_begin),
+	                        (gt, ":garr_troop", 0),
+	                        (gt, ":garr_count", 0),
+	                        (party_add_members, ":center_no", ":garr_troop", ":garr_count"),
+	                    (try_end),
+	                (try_end),
+	                (assign, reg1, ":garr_num_stacks"),
+	                (display_message, "@[WORLD LOAD] {s34}: restored {reg1} garrison stack(s)"),
+	            (try_end),
 	        (try_end),
 	    (try_end),
 	    (assign, reg1, ":wl_matched"),
 	    (display_message, "@[WORLD LOAD] done: {reg1} town/castle centers matched a persisted record"),
+
+	    # Player-kingdom factions (fixed 2026-09-10): reactivate + rename any
+	    # pool faction that was active when the world was last saved. Only
+	    # the string name and active flag can be restored here (no live
+	    # troop id exists yet at boot) -- owner_troop/leader are reclaimed
+	    # per-identity below in coop_world_reclaim_for_player, same split as
+	    # slot_town_lord.
+	    (assign, ":pk_matched", 0),
+	    (try_for_range, ":pk_faction", coop_player_kingdoms_begin, coop_player_kingdoms_end),
+	        (store_sub, ":pk_idx", ":pk_faction", coop_player_kingdoms_begin),
+	        (assign, reg9, ":pk_idx"),
+	        (try_begin),
+	            (dict_has_key, "$coop_world_startup_dict", "@pk{reg9}_active"),
+	            (dict_get_int, ":pk_active", "$coop_world_startup_dict", "@pk{reg9}_active", 0),
+	            (val_add, ":pk_matched", 1),
+	            (try_begin),
+	                (eq, ":pk_active", 1),
+	                (dict_get_str, s37, "$coop_world_startup_dict", "@pk{reg9}_name"),
+	                (faction_set_slot, ":pk_faction", slot_faction_state, sfs_active),
+	                (faction_set_name, ":pk_faction", s37),
+	                (assign, reg1, ":pk_faction"),
+	                (display_message, "@[WORLD LOAD] player-kingdom faction={reg1} reactivated as {s37}"),
+	            (try_end),
+	        (try_end),
+	    (try_end),
+	    (assign, reg1, ":pk_matched"),
+	    (display_message, "@[WORLD LOAD] player-kingdoms: {reg1} records matched"),
+
 	    (dict_free, "$coop_world_startup_dict"),
 	  ]),
 
@@ -12218,6 +12414,40 @@ coop_scripts = [
 	            (party_set_slot, ":center_no", slot_center_coop_governor_troop, ":my_troop"),
 	        (try_end),
 	    (try_end),
+
+	    # Player-kingdom ownership (fixed 2026-09-10, paired with the
+	    # reactivate-by-name restore in coop_world_load_startup): the pool
+	    # faction itself was already reactivated/renamed at server boot with
+	    # no owner_troop set (no live troop existed yet). Reclaim it now for
+	    # whichever identity is actually the persisted owner.
+	    (try_for_range, ":pk_faction", coop_player_kingdoms_begin, coop_player_kingdoms_end),
+	        (store_sub, ":pk_idx", ":pk_faction", coop_player_kingdoms_begin),
+	        (assign, reg9, ":pk_idx"),
+	        (try_begin),
+	            (dict_has_key, "$coop_world_dict", "@pk{reg9}_owner_acctid"),
+	            (faction_slot_eq, ":pk_faction", slot_faction_state, sfs_active),
+	            (dict_get_int, ":pk_stored_acctid", "$coop_world_dict", "@pk{reg9}_owner_acctid", 0),
+	            (dict_get_str, s32, "$coop_world_dict", "@pk{reg9}_owner_name"),
+	            (assign, ":pk_is_owner", 0),
+	            (try_begin),
+	                (neq, ":my_acctid", 0),
+	                (eq, ":pk_stored_acctid", ":my_acctid"),
+	                (assign, ":pk_is_owner", 1),
+	            (else_try),
+	                (eq, ":my_acctid", 0),
+	                (eq, ":pk_stored_acctid", 0),
+	                (str_compare, ":pk_cmp", s32, s31),
+	                (eq, ":pk_cmp", 0),
+	                (assign, ":pk_is_owner", 1),
+	            (try_end),
+	            (eq, ":pk_is_owner", 1),
+	            (faction_set_slot, ":pk_faction", slot_faction_coop_owner_troop, ":my_troop"),
+	            (faction_set_slot, ":pk_faction", slot_faction_leader, ":my_troop"),
+	            (assign, reg1, ":pk_faction"),
+	            (display_message, "@[WORLD RECLAIM] {s31} reclaimed ownership of player-kingdom faction={reg1}"),
+	        (try_end),
+	    (try_end),
+
 	    (dict_free, "$coop_world_dict"),
 	  ]),
 
@@ -12447,6 +12677,7 @@ coop_scripts = [
 	            (party_set_slot, ":center_id", slot_center_volunteer_troop_amount, ":remaining"),
 	        (try_end),
 	        (call_script, "script_coop_save_character", ":player_no"),
+	        (call_script, "script_coop_world_save_center", ":center_id"),
 	    (try_end),
 	    (call_script, "script_coop_send_center_manage_data", ":player_no", ":center_id"),
 	  ]),
@@ -12520,6 +12751,7 @@ coop_scripts = [
 	        (party_add_members, ":owner_party", ":sel_troop", ":sel_count"),
 	        (assign, reg1, ":sel_count"),
 	        (display_message, "@[SETTLEMENT] {s10} withdrew {reg1} troops from the garrison."),
+	        (call_script, "script_coop_world_save_center", ":center_id"),
 	    (else_try),
 	        (display_message, "@[SETTLEMENT] rejected garrison withdrawal from {s10} (no room, or nothing to withdraw)"),
 	    (try_end),
@@ -12570,6 +12802,7 @@ coop_scripts = [
 	        (str_store_party_name, s12, ":center_id"),
 	        (assign, reg1, ":sel_count"),
 	        (display_message, "@[SETTLEMENT] {s10} deposited {reg1} {s11} into the garrison of {s12}."),
+	        (call_script, "script_coop_world_save_center", ":center_id"),
 	    (else_try),
 	        (display_message, "@[SETTLEMENT] rejected garrison deposit from {s10}"),
 	    (try_end),
@@ -12635,6 +12868,20 @@ coop_scripts = [
 	# since villages are never ownable via this mod's siege/fief flow.
 	("coop_check_center_manage_daily",
 	  [
+	    # Backfill (added 2026-09-10 alongside the player-kingdom persistence
+	    # fix): a kingdom founded/auto-founded before that fix landed has
+	    # never had coop_world_save_player_kingdom called for it, so its
+	    # world-dict record doesn't exist yet -- a restart right now still
+	    # wouldn't reactivate/rename it. Re-saving every active pool slot
+	    # daily closes that gap within one in-game day, with no save-file
+	    # edit or manual action needed, and keeps it that way going forward
+	    # in case the name/owner ever changes outside the explicit
+	    # found/leave call sites.
+	    (try_for_range, ":pk_faction", coop_player_kingdoms_begin, coop_player_kingdoms_end),
+	        (faction_slot_eq, ":pk_faction", slot_faction_state, sfs_active),
+	        (call_script, "script_coop_world_save_player_kingdom", ":pk_faction"),
+	    (try_end),
+
 	    (try_for_range, ":center_id", towns_begin, castles_end),
 	        (party_get_slot, ":cur_improvement", ":center_id", slot_center_current_improvement),
 	        (try_begin),

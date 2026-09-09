@@ -63,10 +63,18 @@ factions = [
 # (module_coop_scripts.py) -- never created. Deliberately NOT inside
 # kingdoms_begin..kingdoms_end (see coop_player_kingdoms_begin/_end,
 # module_constants.py) so Phase 1's NPC-only swear-fealty never matches them.
-  ("player_faction_1", "{!}Player Kingdom 1", 0, 0.9, default_kingdom_relations, [], 0xAA5533),
-  ("player_faction_2", "{!}Player Kingdom 2", 0, 0.9, default_kingdom_relations, [], 0x5533AA),
-  ("player_faction_3", "{!}Player Kingdom 3", 0, 0.9, default_kingdom_relations, [], 0x33AA55),
-  ("player_faction_4", "{!}Player Kingdom 4", 0, 0.9, default_kingdom_relations, [], 0xAAAA33),
+  # Fictional in-universe fallback names (2026-09-10, were the raw
+  # "{!}Player Kingdom N" dev placeholders -- the "{!}" prefix does NOT get
+  # stripped for display, it showed up verbatim in native UI, e.g. a
+  # settlement's map tooltip, whenever coop_apply_found_kingdom's runtime
+  # faction_set_name rename hadn't (yet) taken effect for a given slot).
+  # Purely cosmetic insurance: a founded kingdom always gets renamed to
+  # "Kingdom of {founder}" regardless, these are just what an unfounded or
+  # not-yet-renamed slot shows instead of an obviously-broken dev string.
+  ("player_faction_1", "Kingdom of Ashenmoor", 0, 0.9, default_kingdom_relations, [], 0xAA5533),
+  ("player_faction_2", "Kingdom of Drakenfell", 0, 0.9, default_kingdom_relations, [], 0x5533AA),
+  ("player_faction_3", "Kingdom of Whitecrest", 0, 0.9, default_kingdom_relations, [], 0x33AA55),
+  ("player_faction_4", "Kingdom of Blackmarsh", 0, 0.9, default_kingdom_relations, [], 0xAAAA33),
   ("coop_player_kingdoms_end", "{!}coop_player_kingdoms_end", 0, 0, [], []),
 
   ("robber_knights",  "{!}robber_knights", 0, 0.1, [], []),

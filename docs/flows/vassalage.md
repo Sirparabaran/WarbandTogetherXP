@@ -538,6 +538,19 @@ sequenceDiagram
   4th parameter to that already-working, 3-call-site-used event -- smaller
   behavioral surface to regress, at the cost of a small amount of
   duplicated logic.
+- **Garrison composition persistence (fixed 2026-09-10):** reinforce/
+  withdraw/deposit all mutate a center's live troop stacks but none of them
+  ever called `coop_world_save_center` -- found live from a user report
+  ("Garrisons reset after a reload") after a custom garrison built via
+  these features reverted to native's own default composition on restart.
+  `coop_world_save_center` now also writes each stack's troop/count (capped
+  at 20 stacks, comfortable headroom over native's usual handful of tiers
+  per settlement) as `@c{id}_garr_count` + `@c{id}_garr{i}_troop`/`_count`;
+  `coop_world_load_startup` restores it (`party_clear` + `party_add_members`
+  per saved stack) **only** when a `@c{id}_garr_count` key actually exists,
+  so a center saved before this fix correctly keeps its native default
+  garrison rather than being cleared to empty. All three garrison-mutating
+  scripts now call `coop_world_save_center` on their success path.
 - The governor-appointment membership check and the top-3 garrison-stack
   insertion sort both use nested `try_begin`/`else_try` in the *safe* shape
   (each branch fully self-contained, or gated by an explicit flag) --
@@ -658,6 +671,86 @@ trigger's existing `multiplayer_is_server`-gated inner block, alongside the
 center-lock reset it already does. **Lesson:** `game_start` is not a
 trusted "runs once when this dedicated server boots" hook in this
 codebase -- use the `$g_coop_server_ip_loaded` first-tick trigger instead.
+
+### Player-kingdom faction persistence (fixed 2026-09-10)
+
+The persistence work above (and Phase 5/6 generally) only ever persisted
+**per-center** state -- which faction a settlement belongs to, its
+construction/governor/garrison data. It never persisted the **faction
+object itself** for a player-founded kingdom: its active flag, its owner,
+or the display name `faction_set_name` gives it (`coop_apply_found_kingdom`,
+`coop_ensure_player_kingdom_for_troop`). Found live from a user report: a
+map tooltip for a captured castle showed the faction's raw, untranslated
+compile-time default (`"{!}Player Kingdom 1"`, straight out of
+`module_factions.py`) instead of "Kingdom of {player}", after a restart.
+The center's own persisted `@c{id}_faction` correctly pointed back at the
+right pool slot, but that slot itself boots in its default template state
+every time (inactive, unnamed, no owner) since nothing ever reactivated or
+renamed it.
+
+Fixed with a new `coop_world_save_player_kingdom(faction_id)`, mirroring
+the center-ownership pattern exactly: persists `@pk{idx}_active`,
+`@pk{idx}_name` (the live `faction_set_name` string via
+`str_store_faction_name`), and `@pk{idx}_owner_acctid`/`@pk{idx}_owner_name`
+into the same `coop_world.wsedict`, `idx` = the pool slot's 0-3 offset from
+`coop_player_kingdoms_begin`. Called from `coop_apply_found_kingdom`,
+`coop_ensure_player_kingdom_for_troop`, and `coop_apply_leave_faction`
+(disband writes the cleared/inactive record). Restored the same
+world-load/reclaim split as center ownership: `coop_world_load_startup`
+reactivates + renames a persisted-active pool faction at boot (no live
+troop needed for a string), `coop_world_reclaim_for_player` sets
+`slot_faction_coop_owner_troop`/`slot_faction_leader` once the real owner's
+identity reconnects and a live troop id exists.
+
+**Backfill, round 1 (superseded by round 2 below):** `coop_check_center_manage_daily`
+(the existing daily tick) was extended to also re-save every currently-
+active pool faction unconditionally. **This didn't actually fix the
+reported case** -- caught live when the user restarted and the name was
+still wrong. Root cause of the miss: the backfill loop (and the existing
+per-player reclaim loop in `coop_world_reclaim_for_player`) both gated on
+`(faction_slot_eq, ..., slot_faction_state, sfs_active)`. A kingdom founded
+before this whole fix existed has no `@pk{idx}_*` record, so at the very
+next boot `coop_world_load_startup` has nothing to reactivate -- the
+faction boots `sfs_inactive`. Both "helpers" could therefore only ever
+re-save/reclaim an *already*-active kingdom, but an orphaned pre-fix
+kingdom is never active in the first place after that boot -- a catch-22
+that no amount of waiting (daily tick or otherwise) would ever resolve.
+
+**Backfill, round 2 (fixed 2026-09-10): self-heal at the moment the real
+owner reconnects, driven by their own persisted membership instead of the
+faction's own (possibly-reset) state.** New `coop_reclaim_own_player_kingdom`,
+called from `coop_player_hydrate` immediately after `coop_load_character`
+(this needs `slot_troop_coop_faction`/`@char_faction`, which is *only*
+known after that load -- one boot-order subtlety this fix specifically
+had to respect, since `coop_world_reclaim_for_player` itself runs earlier,
+before the load). If this player's own restored faction membership points
+at a player-kingdom pool slot that is currently inactive, and either no
+`@pk{idx}` record exists yet (the orphaned pre-fix case) or the record's
+owner identity matches this player, it reactivates the faction, sets
+owner/leader to this player's live troop, rebuilds the "Kingdom of
+{name}" string, and immediately persists it via
+`coop_world_save_player_kingdom` -- fully self-contained the moment the
+real owner reconnects, no daily-tick wait and no dependency on the
+faction's own state already being right. Deliberately does **not** adopt
+when a *different* recorded owner exists, so a mere member reconnecting
+first can never steal a kingdom out from under its actual founder. The
+daily-tick backfill from round 1 is kept as-is -- harmless, and still
+useful for keeping an already-active kingdom's record fresh if its
+name/owner ever changes outside the three explicit call sites.
+
+**Backfill, round 3 (fixed 2026-09-10): a 0.5s poll, not just the hydrate
+event.** Round 2's fix still didn't take effect on the user's next test.
+The hydrate call is gated by `coop_player_hydrate`'s own
+`slot_player_coop_char_state == 0` idempotence guard, which only resets on
+a genuinely fresh connection -- if the session between deploying round 2
+and testing it wasn't a full disconnect/reconnect (only the server
+restarted, or only the client did, or the player simply never dropped),
+that call never re-ran, and the underlying fix was never actually
+exercised. `coop_reclaim_own_player_kingdom` is a cheap no-op once a
+kingdom is already active (its own first check fails immediately), so a
+new 0.5s `simple_triggers.py` poll now calls it for every connected player
+unconditionally -- converges within a second of the fix actually being
+live, independent of exactly how or when a session came to be connected.
 
 Two things surfaced while building this:
 

@@ -1230,6 +1230,26 @@ simple_triggers = [
    (call_script, "script_coop_check_marshal_vacancies"),
    ]),
 
+  # Player-kingdom self-heal safety net (added 2026-09-10): the hydrate-
+  # triggered call in coop_player_hydrate only fires on a genuinely fresh
+  # connection (char_state==0 idempotence guard) -- if a player's session
+  # was never actually torn down between deploying this fix and testing it
+  # (e.g. only the client or only the server restarted, not a full
+  # disconnect/reconnect), that call never re-runs. This is the same
+  # self-heal (coop_reclaim_own_player_kingdom is a cheap no-op once a
+  # kingdom is already active), just driven by a short poll instead of a
+  # one-shot connect event, so it converges within seconds regardless of
+  # exactly how/when a session came to be connected.
+  (0.5,
+   [
+   (multiplayer_is_server),
+   (game_in_multiplayer_mode),
+   (try_for_players, ":pk_player"),
+       (player_is_active, ":pk_player"),
+       (call_script, "script_coop_reclaim_own_player_kingdom", ":pk_player"),
+   (try_end),
+   ]),
+
   # Lord flee-when-weaker AI: once an hour, re-evaluate pursue-vs-flee for
   # every active lord against nearby at-war connected players. Native's own
   # strategic AI (which would normally do this) is dead in multiplayer --
