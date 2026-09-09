@@ -114,7 +114,15 @@ sequenceDiagram
 
 When a co-op siege capture resolves, a captor who is a sworn vassal gets
 the center personally (their kingdom + `slot_town_lord` = their troop)
-instead of the fixed `fac_player_faction`. Unsworn captors are unchanged.
+instead of the fixed `fac_player_faction`. An unsworn captor (no NPC
+vassalage, no player-founded kingdom) is auto-founded a personal kingdom
+from the same 4-slot pool as an explicit "Found your own Kingdom" click,
+named "Kingdom of {their name}" (added 2026-09-09 -- `fac_player_faction`
+is native's shared placeholder faction, a singleton, so it can't be
+personalized per-captor without incorrectly renaming it for every other
+unsworn captor's own castles too; see Phase 5 below for the pool). If the
+pool of 4 is already exhausted, the center falls back to the original
+`fac_player_faction` grant, same as before this existed.
 
 Deliberately does **not** call native `script_give_center_to_lord`: that
 script resolves the new owner's faction via `store_troop_faction(lord_troop_id)`
@@ -135,6 +143,7 @@ ourselves for personal ownership.
 |---|------|------|--------|
 | 1 | Replaces the single hardcoded `fac_player_faction` grant | `module_coop_scripts.py` | `coop_siege_capture_consequences` |
 | 2 | Resolve captor's faction, grant + broadcast + chat | `module_coop_scripts.py` | `coop_grant_fief_to_captor` |
+| 3 | Auto-found a kingdom for an unsworn captor (2026-09-09), reusing the Phase 5 pool | `module_coop_scripts.py` | `coop_ensure_player_kingdom_for_troop` |
 
 ### Invariants
 
@@ -145,7 +154,19 @@ ourselves for personal ownership.
 - Falls through to today's unchanged `fac_player_faction` grant if the
   captor has no faction, an inactive faction, or isn't a resolvable player
   (e.g. `-1`/local-siege edge cases already handled by the existing
-  `captor_player_no` resolution at both call sites).
+  `captor_player_no` resolution at both call sites), OR if
+  `coop_ensure_player_kingdom_for_troop` can't find a free pool slot.
+- `coop_ensure_player_kingdom_for_troop` deliberately duplicates (does not
+  refactor into) `coop_apply_found_kingdom`'s own pool-slot logic -- same
+  reasoning as `coop_ev_cli_reinforce_garrison`'s duplicate-not-refactor
+  choice elsewhere in Phase 6: smaller regression surface than touching an
+  already-working, directly-player-triggered action. It also deliberately
+  does **not** touch `trp_player` (unlike every explicit player action in
+  this file) -- it fires as a background side effect of a capture
+  resolving, not this player's own live client request, so there's no
+  guarantee `trp_player` currently represents this captor; the
+  server-authoritative `slot_troop_coop_faction` write plus the char-sync
+  push are enough to reach their client correctly.
 
 ## Phase 3: Marshal (auto-appoint by renown)
 
@@ -449,17 +470,20 @@ sequenceDiagram
 | 4 | Construction start (reuses native `script_get_improvement_details` + its own cost/time formula against the owner's real party, not `p_main_party`) | `module_coop_scripts.py` | `coop_apply_start_construction` |
 | 5 | Garrison reinforce (deliberately duplicates, not refactors, `coop_ev_cli_request_recruit`'s volunteer-pool branch -- destination party differs, arity of the already-working shared event is untouched) | `module_coop_scripts.py` | `coop_ev_cli_reinforce_garrison` |
 | 6 | Garrison withdraw (re-reads live composition fresh at apply time, never trusts the pushed snapshot; capacity-checked like the tavern-hire fix) | `module_coop_scripts.py` | `coop_apply_withdraw_garrison` |
+| 6b | Garrison deposit -- move a whole regular-troop stack from the owner's own party into the garrison (the reverse of withdraw; added 2026-09-09). Whole-stack only, no quantity picker -- a client->server message tops out at 3 payload ints (`multiplayer_send_3_int_to_server`) and `center_id` + `troop_id` already uses both, so this deliberately matches Withdraw's own no-quantity UX instead of bit-packing a count | `module_coop_scripts.py` | `coop_apply_deposit_garrison` |
 | 7 | Governor appoint/clear (cosmetic only; membership re-validated server-side, `-1` clears) | `module_coop_scripts.py` | `coop_apply_appoint_governor` |
 | 8 | Daily construction-completion + tax trigger (reuses native's own `slot_center_has_*` flip so unmodified native prosperity/trade scripts see it for free) | `module_simple_triggers.py` (interval 24) / `module_coop_scripts.py` | `coop_check_center_manage_daily` |
-| 9 | Client-side senders | `module_coop_repairs.py` | `coop_queue_request_center_manage_data`, `coop_queue_start_construction`, `coop_queue_reinforce_garrison`, `coop_queue_withdraw_garrison`, `coop_queue_appoint_governor` |
+| 9 | Client-side senders | `module_coop_repairs.py` | `coop_queue_request_center_manage_data`, `coop_queue_start_construction`, `coop_queue_reinforce_garrison`, `coop_queue_withdraw_garrison`, `coop_queue_deposit_garrison`, `coop_queue_appoint_governor` |
 | 10 | Menu entry point + submenus | `module_game_menus.py` | `coop_manage_settlement` item (beside, not replacing, native's `walled_center_manage`), `mnu_coop_manage_settlement`/`_construction`/`_garrison`/`_governor` |
-| 11 | Governor-picker helper (safe to read `p_main_party` locally -- unlike a center/garrison party, the player's OWN party IS reliably client-synced, per `party-screen-sync.md`) | `module_coop_scripts.py` | `coop_client_get_nth_companion` |
+| 11 | Governor-picker helper. **Corrected 2026-09-10** -- originally read `p_main_party` client-side on the (wrong) assumption that a coop client's own party is reliably reachable through it; `p_main_party` is native singleplayer's singleton and has no relationship to a coop client's actual party (same bug class `party-screen-sync.md`'s tavern-hire fix already found in `module_dialogs.py` -- `num_stacks` was always 0, so this silently offered zero companions). Now resolves the real party via `multiplayer_get_my_player` + `player_get_party_id`, matching that fix's pattern. | `module_coop_scripts.py` | `coop_client_get_nth_companion` |
+| 11b | Deposit-picker helper, same fix and basis as #11, enumerating regular (non-hero) stacks instead of companions and also returning the stack count (reg1) for menu display | `module_coop_scripts.py` | `coop_client_get_nth_party_stack` |
 
 ### State & events
 
 - **Events:** ch49 `request_center_manage_data`=200, `start_construction_request`=201,
   `withdraw_garrison_request`=202, `appoint_governor_request`=203,
-  `reinforce_garrison_request`=204 (deliberately high round numbers, not
+  `reinforce_garrison_request`=204, `deposit_garrison_request`=205
+  (added 2026-09-09; deliberately high round numbers, not
   sequential with Phase 5's 43-47, to avoid any risk of colliding with the
   existing sequential id block -- `check_campaign_protocol.py` confirms no
   actual duplicate within either dispatcher's namespace). ch125
@@ -494,6 +518,21 @@ sequenceDiagram
   `coop_send_center_manage_data` push, which may be stale by the time the
   player clicks a withdraw button (another player could have withdrawn
   first, etc.).
+- Both withdraw and deposit take a `count` payload (added 2026-09-10, up
+  from the original whole-stack-only design -- see the qty submenus below)
+  purely as a client-chosen upper bound; the server always re-derives the
+  live stack size fresh (garrison composition for withdraw, the owner's own
+  party for deposit) and clamps `count` down to it (`val_min`), never trusts
+  it as a fact. Heroes are rejected from deposit (`neg|troop_is_hero`) since
+  a garrison stack has no companion-slot semantics.
+- Withdraw/deposit are two-step from the menu: picking a stack
+  (`coop_garrison_withdraw_0..2` / `coop_garrison_deposit_0..3`) stashes the
+  troop id and live count into `$g_coop_garrison_wd_*`/`$g_coop_garrison_dep_*`
+  globals and jumps to a small quantity submenu
+  (`mnu_coop_garrison_withdraw_qty`/`_deposit_qty`) offering 1/5/10, each
+  gated visible only when that many are actually available
+  (`(ge, ..., N)`) -- a display nicety only, since the server clamps
+  regardless.
 - Garrison reinforcement deliberately duplicates
   `coop_ev_cli_request_recruit`'s volunteer-pool logic rather than adding a
   4th parameter to that already-working, 3-call-site-used event -- smaller

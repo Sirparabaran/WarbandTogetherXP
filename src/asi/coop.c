@@ -140,6 +140,7 @@ static void read_config(HINSTANCE hinstDLL) {
 
 /* Forward declarations for cross-referenced functions */
 static void flush_result_string_to_file(void);
+static void republish_pending_local_result(void);
 
 /* ------------------------------------------------------------------ */
 /*  s59 writer thread (writes battle server IP to string register)    */
@@ -189,6 +190,7 @@ static DWORD WINAPI s59_writer_thread(LPVOID param) {
     while (1) {
         Sleep(500);
         flush_result_string_to_file();
+        republish_pending_local_result();
         force_browser_lan_default();
         { /* Check s0 initialized */
             char *s0 = (char *)STRING_REG_BASE;
@@ -884,11 +886,54 @@ static int g_pending_cas_count_idx = -1;
 static int g_pending_cas_tid_idx[10]    = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
 static int g_pending_cas_killed_idx[10] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
 
+/* Cache of an already-parsed pending result, kept in plain process memory
+   so it survives the engine's wipe of module globals on connect. The file
+   is read (and deleted) once, from the disconnected browser screen, right
+   before the auto-reconnect actually fires -- so the module-global write
+   check_pending_local_result() does below is immediately clobbered by that
+   very connect, before any client script ever runs to consume it (module
+   scripts only run once multiplayer_is_campaign is true, i.e. AFTER the
+   wipe). republish_pending_local_result(), called every tick from
+   s59_writer_thread below, keeps re-writing from this cache until the
+   module's own simple_trigger sets $g_coop_pending_local_result=2 to
+   signal it actually sent the result to the server. */
+static int s_pending_cache_valid = 0;
+static int s_pending_cache_win_loss = 0;
+static int s_pending_cache_xp = 0;
+static int s_pending_cache_cas_count = 0;
+static int s_pending_cache_cas_tid[10]    = {0,0,0,0,0,0,0,0,0,0};
+static int s_pending_cache_cas_killed[10] = {0,0,0,0,0,0,0,0,0,0};
+
+static void republish_pending_local_result(void) {
+    int i;
+    if (!s_pending_cache_valid) return;
+    if (g_pending_result_idx < 0 || g_pending_win_loss_idx < 0) return;
+
+    /* Module has sent it to the server -- stop republishing. */
+    if (modglobals_get_int(g_pending_result_idx, 0) == 2) {
+        s_pending_cache_valid = 0;
+        coop_log("republish_pending: consumed by module, cache cleared\n");
+        return;
+    }
+
+    modglobals_set(g_pending_result_idx, 1);
+    modglobals_set(g_pending_win_loss_idx, s_pending_cache_win_loss);
+    if (g_pending_xp_idx >= 0) modglobals_set(g_pending_xp_idx, s_pending_cache_xp);
+    if (g_pending_cas_count_idx >= 0) modglobals_set(g_pending_cas_count_idx, s_pending_cache_cas_count);
+    for (i = 0; i < s_pending_cache_cas_count; i++) {
+        if (g_pending_cas_tid_idx[i] >= 0)
+            modglobals_set(g_pending_cas_tid_idx[i], s_pending_cache_cas_tid[i]);
+        if (g_pending_cas_killed_idx[i] >= 0)
+            modglobals_set(g_pending_cas_killed_idx[i], s_pending_cache_cas_killed[i]);
+    }
+}
+
 static void check_pending_local_result(void) {
     char path[MAX_PATH], key[32];
     int valid, win_loss, xp, cas_count, i, tid, killed;
 
     if (g_pending_result_idx < 0 || g_pending_win_loss_idx < 0) return;
+    if (s_pending_cache_valid) return;                        /* already parsed, awaiting delivery */
     if (modglobals_get_int(g_pending_result_idx, 0) != 0) return;
 
     _snprintf(path, sizeof(path), "%s\\%s", g_game_dir, LOCAL_RESULT_FILENAME);
@@ -902,25 +947,28 @@ static void check_pending_local_result(void) {
     cas_count = GetPrivateProfileIntA("Result", "cas_count", 0, path);
     if (cas_count > 10) cas_count = 10;
 
-    modglobals_set(g_pending_result_idx, 1);
-    modglobals_set(g_pending_win_loss_idx, win_loss);
-    if (g_pending_xp_idx >= 0) modglobals_set(g_pending_xp_idx, xp);
-    if (g_pending_cas_count_idx >= 0) modglobals_set(g_pending_cas_count_idx, cas_count);
+    s_pending_cache_win_loss  = win_loss;
+    s_pending_cache_xp        = xp;
+    s_pending_cache_cas_count = cas_count;
 
     for (i = 0; i < cas_count; i++) {
         _snprintf(key, sizeof(key), "cas_%d_troop", i);
         tid = GetPrivateProfileIntA("Result", key, 0, path);
         _snprintf(key, sizeof(key), "cas_%d_killed", i);
         killed = GetPrivateProfileIntA("Result", key, 0, path);
-        if (g_pending_cas_tid_idx[i] >= 0)
-            modglobals_set(g_pending_cas_tid_idx[i], tid);
-        if (g_pending_cas_killed_idx[i] >= 0)
-            modglobals_set(g_pending_cas_killed_idx[i], killed);
+        s_pending_cache_cas_tid[i]    = tid;
+        s_pending_cache_cas_killed[i] = killed;
         coop_log("check_pending: cas[%d] troop=%d killed=%d\n", i, tid, killed);
     }
 
     coop_log("check_pending: win=%d xp=%d cas=%d\n", win_loss, xp, cas_count);
     DeleteFileA(path);
+
+    /* Cache first (so a connect racing the very next line still leaves a
+       full cache for republish_pending_local_result to recover from), then
+       do this tick's immediate write. */
+    s_pending_cache_valid = 1;
+    republish_pending_local_result();
 }
 
 static void __cdecl mission_end_restore_gametype(void) {

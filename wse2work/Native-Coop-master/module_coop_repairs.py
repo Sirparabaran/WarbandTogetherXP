@@ -25,6 +25,15 @@ repair_scripts = [
     (multiplayer_send_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
       multiplayer_event_multiplayer_campaign_local_visit_done),
     (assign, "$g_coop_in_local_visit", 0),
+    # Safety net (added 2026-09-10) for the exact race the comment above
+    # already flags: if WSE2's mission teardown wins that race and the
+    # local_visit_done send above never reaches the server, arm the same
+    # auto-reconnect a dedicated battle server's own end-of-battle kick
+    # arms (module_game_menus.py mnu_coop_local_battle_debrief) instead of
+    # leaving the player silently disconnected. Harmless when the send
+    # above did land and the connection is still up -- edge-latched, and
+    # the ASI only acts on it from an idle/menu context, never mid-mission.
+    (assign, "$g_coop_return_to_campaign", 1),
   ]),
   ("coop_send_tavern_offer", [
     (store_script_param, ":player", 1),
@@ -316,6 +325,13 @@ repair_scripts = [
     (assign, "$g_coop_in_local_visit", 1),
     (set_jump_mission, "mt_coop_visit_hall"),
     (jump_to_scene, ":scene"),
+    # This runs from mnu_coop_hall_wait's "Enter the hall" button, unlike
+    # every other local-visit entry point (which launches straight from
+    # mnu_coop_center_encounter) -- without an explicit destination queued
+    # here, finish_mission on Tab exit pops back to the stale "Preparing
+    # the Lord's Hall" screen underneath instead of the settlement menu
+    # (fixed 2026-09-10, paired with the ti_tab_pressed fix above).
+    (jump_to_menu, "mnu_coop_center_encounter"),
     (assign, "$g_coop_asi_local_battle", 1),
     (change_screen_mission),
   ]),
@@ -381,11 +397,26 @@ repair_scripts = [
     (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
       multiplayer_event_multiplayer_campaign_reinforce_garrison_request, ":center_id", ":count"),
   ]),
+  # Count is a client-chosen convenience only (1/5/10 buttons); the server
+  # re-resolves the live stack fresh and clamps to it, never trusting this
+  # value directly.
   ("coop_queue_withdraw_garrison", [
     (store_script_param, ":center_id", 1),
     (store_script_param, ":stack_index", 2),
-    (multiplayer_send_3_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
-      multiplayer_event_multiplayer_campaign_withdraw_garrison_request, ":center_id", ":stack_index"),
+    (store_script_param, ":count", 3),
+    (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+      multiplayer_event_multiplayer_campaign_withdraw_garrison_request, ":center_id", ":stack_index", ":count"),
+  ]),
+  # Moves up to `count` of a troop stack from the player's own party into
+  # the garrison (1/5/10 buttons). The server re-resolves the live stack
+  # fresh from the owner's own party and clamps to it, never trusting this
+  # value directly.
+  ("coop_queue_deposit_garrison", [
+    (store_script_param, ":center_id", 1),
+    (store_script_param, ":troop_id", 2),
+    (store_script_param, ":count", 3),
+    (multiplayer_send_4_int_to_server, multiplayer_event_multiplayer_campaign_client_events,
+      multiplayer_event_multiplayer_campaign_deposit_garrison_request, ":center_id", ":troop_id", ":count"),
   ]),
   ("coop_queue_appoint_governor", [
     (store_script_param, ":center_id", 1),

@@ -302,6 +302,11 @@ multiplayer_event_multiplayer_campaign_start_construction_request = 201
 multiplayer_event_multiplayer_campaign_withdraw_garrison_request  = 202
 multiplayer_event_multiplayer_campaign_appoint_governor_request   = 203
 multiplayer_event_multiplayer_campaign_reinforce_garrison_request = 204
+# Moves up to `count` of a troop stack from the player's own party into a
+# garrison they own (the reverse of withdraw_garrison_request). Payload:
+# center_id, troop_id, count (1/5/10 from the client's qty submenu) --
+# server always clamps count to the live stack size, never trusts it.
+multiplayer_event_multiplayer_campaign_deposit_garrison_request   = 205
 multiplayer_event_multiplayer_campaign_server_event_hall_npc    = 53
 multiplayer_event_multiplayer_campaign_server_event_tavern_offer = 54
 multiplayer_event_multiplayer_campaign_server_event_tavern_result = 55

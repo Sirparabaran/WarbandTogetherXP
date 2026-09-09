@@ -8319,26 +8319,130 @@ game_menus = [
       ("coop_garrison_reinforce",[],"Reinforce garrison (up to 5, from available volunteers).",
        [(call_script, "script_coop_queue_reinforce_garrison", "$g_coop_manage_center", 5),
         (jump_to_menu, "mnu_coop_manage_settlement")]),
+      # Withdraw -- picks a garrison stack, then a quantity submenu
+      # (1/5/10) reads $g_coop_garrison_wd_troop/_count, set here.
       ("coop_garrison_withdraw_0",
        [(gt, "$g_coop_center_manage_stack0_troop", 0),
         (str_store_troop_name, s27, "$g_coop_center_manage_stack0_troop")],
-       "Withdraw {s27}.",
-       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", 0),
-        (jump_to_menu, "mnu_coop_manage_settlement")]),
+       "Withdraw {s27}...",
+       [(assign, "$g_coop_garrison_wd_stack", 0),
+        (assign, "$g_coop_garrison_wd_troop", "$g_coop_center_manage_stack0_troop"),
+        (assign, "$g_coop_garrison_wd_count", "$g_coop_center_manage_stack0_count"),
+        (jump_to_menu, "mnu_coop_garrison_withdraw_qty")]),
       ("coop_garrison_withdraw_1",
        [(gt, "$g_coop_center_manage_stack1_troop", 0),
         (str_store_troop_name, s27, "$g_coop_center_manage_stack1_troop")],
-       "Withdraw {s27}.",
-       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", 1),
-        (jump_to_menu, "mnu_coop_manage_settlement")]),
+       "Withdraw {s27}...",
+       [(assign, "$g_coop_garrison_wd_stack", 1),
+        (assign, "$g_coop_garrison_wd_troop", "$g_coop_center_manage_stack1_troop"),
+        (assign, "$g_coop_garrison_wd_count", "$g_coop_center_manage_stack1_count"),
+        (jump_to_menu, "mnu_coop_garrison_withdraw_qty")]),
       ("coop_garrison_withdraw_2",
        [(gt, "$g_coop_center_manage_stack2_troop", 0),
         (str_store_troop_name, s27, "$g_coop_center_manage_stack2_troop")],
-       "Withdraw {s27}.",
-       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", 2),
-        (jump_to_menu, "mnu_coop_manage_settlement")]),
+       "Withdraw {s27}...",
+       [(assign, "$g_coop_garrison_wd_stack", 2),
+        (assign, "$g_coop_garrison_wd_troop", "$g_coop_center_manage_stack2_troop"),
+        (assign, "$g_coop_garrison_wd_count", "$g_coop_center_manage_stack2_count"),
+        (jump_to_menu, "mnu_coop_garrison_withdraw_qty")]),
+      # Deposit -- move a regular-troop stack from the player's own party
+      # into this garrison. Reads the player's own party locally (reliably
+      # synced for its own owner, unlike a center's slots -- same basis as
+      # the governor picker's companion enumeration above), up to 4 stacks.
+      # Picks a stack, then a quantity submenu (1/5/10) reads
+      # $g_coop_garrison_dep_troop/_count, set here.
+      ("coop_garrison_deposit_0",
+       [(call_script, "script_coop_client_get_nth_party_stack", 0), (gt, reg0, 0),
+        (str_store_troop_name, s29, reg0), (assign, reg9, reg1)],
+       "Deposit {s29} (x{reg9})...",
+       [(call_script, "script_coop_client_get_nth_party_stack", 0),
+        (assign, "$g_coop_garrison_dep_troop", reg0),
+        (assign, "$g_coop_garrison_dep_count", reg1),
+        (jump_to_menu, "mnu_coop_garrison_deposit_qty")]),
+      ("coop_garrison_deposit_1",
+       [(call_script, "script_coop_client_get_nth_party_stack", 1), (gt, reg0, 0),
+        (str_store_troop_name, s29, reg0), (assign, reg9, reg1)],
+       "Deposit {s29} (x{reg9})...",
+       [(call_script, "script_coop_client_get_nth_party_stack", 1),
+        (assign, "$g_coop_garrison_dep_troop", reg0),
+        (assign, "$g_coop_garrison_dep_count", reg1),
+        (jump_to_menu, "mnu_coop_garrison_deposit_qty")]),
+      ("coop_garrison_deposit_2",
+       [(call_script, "script_coop_client_get_nth_party_stack", 2), (gt, reg0, 0),
+        (str_store_troop_name, s29, reg0), (assign, reg9, reg1)],
+       "Deposit {s29} (x{reg9})...",
+       [(call_script, "script_coop_client_get_nth_party_stack", 2),
+        (assign, "$g_coop_garrison_dep_troop", reg0),
+        (assign, "$g_coop_garrison_dep_count", reg1),
+        (jump_to_menu, "mnu_coop_garrison_deposit_qty")]),
+      ("coop_garrison_deposit_3",
+       [(call_script, "script_coop_client_get_nth_party_stack", 3), (gt, reg0, 0),
+        (str_store_troop_name, s29, reg0), (assign, reg9, reg1)],
+       "Deposit {s29} (x{reg9})...",
+       [(call_script, "script_coop_client_get_nth_party_stack", 3),
+        (assign, "$g_coop_garrison_dep_troop", reg0),
+        (assign, "$g_coop_garrison_dep_count", reg1),
+        (jump_to_menu, "mnu_coop_garrison_deposit_qty")]),
       ("coop_garrison_back",[],"Back.",
        [(jump_to_menu, "mnu_coop_manage_settlement")]),
+    ],
+  ),
+
+  (
+    "coop_garrison_withdraw_qty",0,
+    "How many {s27} do you want to withdraw? ({reg10} available)",
+    "none",
+    [
+      (str_store_troop_name, s27, "$g_coop_garrison_wd_troop"),
+      (assign, reg10, "$g_coop_garrison_wd_count"),
+    ],
+    [
+      ("coop_garrison_withdraw_qty_1",
+       [(ge, "$g_coop_garrison_wd_count", 1)],
+       "Withdraw 1.",
+       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", "$g_coop_garrison_wd_stack", 1),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_withdraw_qty_5",
+       [(ge, "$g_coop_garrison_wd_count", 5)],
+       "Withdraw 5.",
+       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", "$g_coop_garrison_wd_stack", 5),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_withdraw_qty_10",
+       [(ge, "$g_coop_garrison_wd_count", 10)],
+       "Withdraw 10.",
+       [(call_script, "script_coop_queue_withdraw_garrison", "$g_coop_manage_center", "$g_coop_garrison_wd_stack", 10),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_withdraw_qty_back",[],"Back.",
+       [(jump_to_menu, "mnu_coop_manage_garrison")]),
+    ],
+  ),
+
+  (
+    "coop_garrison_deposit_qty",0,
+    "How many {s29} do you want to deposit? ({reg10} available)",
+    "none",
+    [
+      (str_store_troop_name, s29, "$g_coop_garrison_dep_troop"),
+      (assign, reg10, "$g_coop_garrison_dep_count"),
+    ],
+    [
+      ("coop_garrison_deposit_qty_1",
+       [(ge, "$g_coop_garrison_dep_count", 1)],
+       "Deposit 1.",
+       [(call_script, "script_coop_queue_deposit_garrison", "$g_coop_manage_center", "$g_coop_garrison_dep_troop", 1),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_deposit_qty_5",
+       [(ge, "$g_coop_garrison_dep_count", 5)],
+       "Deposit 5.",
+       [(call_script, "script_coop_queue_deposit_garrison", "$g_coop_manage_center", "$g_coop_garrison_dep_troop", 5),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_deposit_qty_10",
+       [(ge, "$g_coop_garrison_dep_count", 10)],
+       "Deposit 10.",
+       [(call_script, "script_coop_queue_deposit_garrison", "$g_coop_manage_center", "$g_coop_garrison_dep_troop", 10),
+        (jump_to_menu, "mnu_coop_manage_settlement")]),
+      ("coop_garrison_deposit_qty_back",[],"Back.",
+       [(jump_to_menu, "mnu_coop_manage_garrison")]),
     ],
   ),
 
@@ -14955,11 +15059,20 @@ game_menus = [
       ]),
 
       # --- Local SP battle: read party data directly, launch immediately ---
+      # Re-enabled 2026-09-10 (was permanently disabled: entering an SP
+      # mission used to disconnect/rebuild the campaign character and could
+      # reopen character creation). The debrief menu below
+      # (mnu_coop_local_battle_debrief) already handles a lost connection
+      # gracefully -- it never touches the network mid-mission, instead
+      # writing the result to globals the ASI persists to
+      # coop_local_result.ini and replays via $g_coop_pending_local_result
+      # once back on the campaign server (module_simple_triggers.py). What
+      # was missing was the reconnect itself actually happening automatically
+      # -- its "Continue" button now arms the same $g_coop_return_to_campaign
+      # auto-join hop a dedicated battle server's own end-of-battle kick
+      # arms, instead of leaving the player to manually rejoin.
       ("encounter_fight_sp",
       [
-          # Disabled: entering an SP mission disconnects/rebuilds the
-          # campaign character and can reopen character creation.
-          (eq, 1, 0),
       ],
       "Fight locally (Singleplayer).",
       [
@@ -15958,6 +16071,13 @@ game_menus = [
       [],
       "Continue.",
       [
+          # Auto-reconnect to the campaign server, same mechanic a dedicated
+          # battle server's own end-of-battle kick already arms (the ASI's
+          # 500ms modglobals thread reads this and drives the invite
+          # auto-join hop at the campaign address -- see coop.c). The result
+          # itself was already saved by the block above regardless of
+          # whether this reconnect succeeds on the first try.
+          (assign, "$g_coop_return_to_campaign", 1),
           (change_screen_quit),
       ]),
     ]

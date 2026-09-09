@@ -104,6 +104,31 @@ sequenceDiagram
   remove+add yields healthy upgrades). Parked: minor gameplay nuance,
   cheapest to answer in the wave-2 runtime smoke test rather than engine RE.
 
+- **Not fixed (2026-09-10): the native party window's "Company: X/Y" header
+  shows a wrong, frozen capacity denominator that doesn't track the real
+  server-authoritative value.** Found while debugging a garrison-withdraw
+  report ("Withdraw 5" only added 2) -- turned out withdraw was working
+  correctly: `party_get_free_companions_capacity(player_get_party_id(...))`
+  server-side (the same op+party-resolution `coop_hire_tavern` already uses
+  successfully) correctly computed a real cap of 34 from the character's
+  actual `leadership=1`/`renown=45` (34 used + 2 free), and the withdraw
+  correctly added exactly the 2 that fit. But the party window showed
+  "32/43" beforehand and "34/43" after a fresh reopen -- the numerator
+  (roster count) tracked the real change exactly, the denominator (43)
+  stayed frozen across both real, different game states, `9` off from the
+  true `36` both times. Ruled out a merely-stale window-open snapshot: a
+  full close+reopen refreshed the numerator but not the denominator.
+  `window_party` is not built from module-script text at all (`module_scripts.py`
+  `wse_window_opened`'s `window_party` case only hooks open/close for the
+  roster diff-and-send sync, never touches the header) -- this is a
+  purely native-rendered number, so there is no confirmed module-script
+  lever to correct it, the same class of dead end as the mount-speed issue
+  in `inventory-sync.md` row 14. Not investigated further without new
+  evidence (no WSE2 engine source in this checkout to confirm what the
+  native calculation actually reads). Functionally cosmetic only --
+  garrison withdraw/deposit both correctly enforce the *real* capacity
+  regardless of what this header displays.
+
 ## Related: tavern mercenary hire "no room" feedback (fixed 2026-09-07)
 
 Not the roster-dismiss/upgrade flow this dossier otherwise covers, but the

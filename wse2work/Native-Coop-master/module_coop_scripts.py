@@ -7838,6 +7838,78 @@ coop_scripts = [
       (try_end),
   ]),
 
+  # Vassalage Phase 5 follow-up (2026-09-09) -- auto-founds a personal
+  # kingdom for an UNSWORN captor the first time they personally capture a
+  # settlement (coop_grant_fief_to_captor, below), instead of leaving the
+  # center's faction on native's shared fac_player_faction placeholder
+  # ("Player Faction"). That placeholder is a singleton -- renaming IT
+  # per-player would incorrectly rename every other unsworn captor's own
+  # castles too -- so an unsworn captor needs a REAL pool slot the same way
+  # an explicit "Found your own Kingdom" click gets one.
+  #
+  # Deliberately duplicates (does not refactor into) coop_apply_found_kingdom
+  # below -- same reasoning as coop_ev_cli_reinforce_garrison's own
+  # duplicate-not-refactor choice: smaller regression surface than touching
+  # an already-working, directly-player-triggered action. Does NOT touch
+  # trp_player (unlike the explicit actions below) -- this fires as a
+  # background side effect of a capture resolving, not as this player's own
+  # live client request, so there's no guarantee trp_player currently
+  # represents this captor; the server-authoritative slot_troop_coop_faction
+  # write plus the char-sync push are enough to reach their client correctly.
+  #
+  # Returns the assigned/existing faction id in reg0, or -1 if the pool of 4
+  # is already exhausted -- the caller keeps fac_player_faction as a
+  # harmless fallback in that case, same as before this existed.
+  ("coop_ensure_player_kingdom_for_troop",
+    [
+      (store_script_param, ":troop_no", 1),
+      (store_script_param, ":player_no", 2),
+      (assign, reg0, -1),
+      (troop_get_slot, ":cur_faction", ":troop_no", slot_troop_coop_faction),
+      (try_begin),
+          # Already owns an active player-kingdom -- self-contained branch,
+          # nothing after try_end depends on this one having fired. Safe
+          # nested try/else_try shape, see [[feedback-nested-try-begin-gotcha]].
+          (is_between, ":cur_faction", coop_player_kingdoms_begin, coop_player_kingdoms_end),
+          (faction_get_slot, ":cur_owner", ":cur_faction", slot_faction_coop_owner_troop),
+          (eq, ":cur_owner", ":troop_no"),
+          (assign, reg0, ":cur_faction"),
+      (else_try),
+          # Find the first idle pool slot and found it for this troop --
+          # also self-contained: reg0 stays -1 (already set above) if no
+          # slot is free.
+          (assign, ":slot_faction", -1),
+          (try_for_range, ":cand_faction", coop_player_kingdoms_begin, coop_player_kingdoms_end),
+              (eq, ":slot_faction", -1),
+              (faction_slot_eq, ":cand_faction", slot_faction_state, sfs_inactive),
+              (faction_get_slot, ":cand_owner", ":cand_faction", slot_faction_coop_owner_troop),
+              (eq, ":cand_owner", -1),
+              (assign, ":slot_faction", ":cand_faction"),
+          (try_end),
+          (try_begin),
+              (neq, ":slot_faction", -1),
+              (faction_set_slot, ":slot_faction", slot_faction_coop_owner_troop, ":troop_no"),
+              (faction_set_slot, ":slot_faction", slot_faction_state, sfs_active),
+              (faction_set_slot, ":slot_faction", slot_faction_leader, ":troop_no"),
+              (str_store_troop_name, s1, ":troop_no"),
+              (str_store_string, s11, "@Kingdom of {s1}"),
+              (faction_set_name, ":slot_faction", s11),
+              (troop_set_slot, ":troop_no", slot_troop_coop_faction, ":slot_faction"),
+              (try_begin),
+                  (ge, ":player_no", 0),
+                  (player_is_active, ":player_no"),
+                  (player_get_slot, ":dirty", ":player_no", slot_player_coop_char_dirty),
+                  (val_or, ":dirty", coop_char_dirty_faction),
+                  (player_set_slot, ":player_no", slot_player_coop_char_dirty, ":dirty"),
+                  (call_script, "script_coop_save_character", ":player_no"),
+                  (call_script, "script_coop_send_char_sync_to_client", ":player_no"),
+              (try_end),
+              (display_message, "@[FACTION] {s1} automatically founded {s11} by capturing a settlement."),
+              (assign, reg0, ":slot_faction"),
+          (try_end),
+      (try_end),
+    ]),
+
   # Vassalage Phase 5 -- player-founded factions. Fixed pool of 4
   # normally-inactive factions (player_faction_1..4, module_factions.py),
   # modeled on native's own fac_player_supporters_faction: never created,
@@ -7879,7 +7951,7 @@ coop_scripts = [
           (faction_set_slot, ":slot_faction", slot_faction_state, sfs_active),
           (faction_set_slot, ":slot_faction", slot_faction_leader, ":troop_no"),
           (str_store_troop_name, s1, ":troop_no"),
-          (str_store_string, s11, "@{s1}'s Kingdom"),
+          (str_store_string, s11, "@Kingdom of {s1}"),
           (faction_set_name, ":slot_faction", s11),
           (troop_set_slot, ":troop_no", slot_troop_coop_faction, ":slot_faction"),
           (troop_set_slot, "trp_player", slot_troop_coop_faction, ":slot_faction"),
@@ -8236,18 +8308,52 @@ coop_scripts = [
   # correctly replicated for a player's own troops the same way
   # party-screen-sync.md documents for the roster screen. reg0 = troop id,
   # or -1 if there is no such companion.
+  # Fixed 2026-09-10: was reading "p_main_party" -- native singleplayer's
+  # singleton, which has no relationship to a coop client's actual party
+  # (docs/flows/party-screen-sync.md's tavern-hire fix already found and
+  # fixed this exact bug class in module_dialogs.py). num_stacks was always
+  # 0 for a dedicated coop client, so the governor picker silently offered
+  # zero companions. Resolve the real party the same way that fix does:
+  # multiplayer_get_my_player + player_get_party_id.
   ("coop_client_get_nth_companion",
     [
       (store_script_param, ":n", 1),
       (assign, reg0, -1),
       (assign, ":found_index", -1),
-      (party_get_num_companion_stacks, ":num_stacks", "p_main_party"),
+      (multiplayer_get_my_player, ":my_player"),
+      (player_get_party_id, ":my_party", ":my_player"),
+      (party_get_num_companion_stacks, ":num_stacks", ":my_party"),
       (try_for_range, ":i_stack", 0, ":num_stacks"),
-          (party_stack_get_troop_id, ":stack_troop", "p_main_party", ":i_stack"),
+          (party_stack_get_troop_id, ":stack_troop", ":my_party", ":i_stack"),
           (troop_is_hero, ":stack_troop"),
           (val_add, ":found_index", 1),
           (eq, ":found_index", ":n"),
           (assign, reg0, ":stack_troop"),
+      (try_end),
+    ]),
+
+  # Nth regular (non-hero) troop stack of the player's own party, for the
+  # "deposit to garrison" picker -- mirrors coop_client_get_nth_companion's
+  # shape/safety, just filtering the opposite way and also returning the
+  # stack's count in reg1 for display.
+  ("coop_client_get_nth_party_stack",
+    [
+      (store_script_param, ":n", 1),
+      (assign, reg0, -1),
+      (assign, reg1, 0),
+      (assign, ":found_index", -1),
+      (multiplayer_get_my_player, ":my_player"),
+      (player_get_party_id, ":my_party", ":my_player"),
+      (party_get_num_companion_stacks, ":num_stacks", ":my_party"),
+      (try_for_range, ":i_stack", 0, ":num_stacks"),
+          (party_stack_get_troop_id, ":stack_troop", ":my_party", ":i_stack"),
+          (neg|troop_is_hero, ":stack_troop"),
+          (party_stack_get_size, ":stack_count", ":my_party", ":i_stack"),
+          (gt, ":stack_count", 0),
+          (val_add, ":found_index", 1),
+          (eq, ":found_index", ":n"),
+          (assign, reg0, ":stack_troop"),
+          (assign, reg1, ":stack_count"),
       (try_end),
     ]),
 
@@ -11818,6 +11924,19 @@ coop_scripts = [
 			(assign, ":target_faction", ":captor_faction"),
 		(try_end),
 
+		# Unsworn captor (target_faction still the shared fac_player_faction
+		# placeholder) -- auto-found them a personal kingdom from the same
+		# pool "Found your own Kingdom" uses, instead of leaving the
+		# center on that shared, unrenameable placeholder faction. Flat AND
+		# chain, no OR/else_try ambiguity to worry about here.
+		(try_begin),
+			(ge, ":captor_troop", 0),
+			(eq, ":target_faction", "fac_player_faction"),
+			(call_script, "script_coop_ensure_player_kingdom_for_troop", ":captor_troop", ":captor_player_no"),
+			(gt, reg0, 0),
+			(assign, ":target_faction", reg0),
+		(try_end),
+
 		(call_script, "script_give_center_to_faction", ":center_no", ":target_faction"),
 
 		# Personal ownership goes to ANY resolvable captor, sworn vassal or
@@ -12340,6 +12459,7 @@ coop_scripts = [
 	    (store_script_param, ":player_no", 1),
 	    (store_script_param, ":center_id", 2),
 	    (store_script_param, ":stack_index", 3),
+	    (store_script_param, ":req_count", 4),
 	    (player_get_troop_id, ":troop_no", ":player_no"),
 	    (str_store_player_username, s10, ":player_no"),
 	    (assign, ":ok", 0),
@@ -12385,6 +12505,8 @@ coop_scripts = [
 	        (try_end),
 	        (gt, ":sel_troop", 0),
 	        (gt, ":sel_count", 0),
+	        (gt, ":req_count", 0),
+	        (val_min, ":sel_count", ":req_count"),
 
 	        (player_get_party_id, ":owner_party", ":player_no"),
 	        (party_get_free_companions_capacity, ":free_cap", ":owner_party"),
@@ -12396,9 +12518,60 @@ coop_scripts = [
 	        (eq, ":ok", 1),
 	        (party_remove_members, ":center_id", ":sel_troop", ":sel_count"),
 	        (party_add_members, ":owner_party", ":sel_troop", ":sel_count"),
-	        (display_message, "@[SETTLEMENT] {s10} withdrew troops from the garrison."),
+	        (assign, reg1, ":sel_count"),
+	        (display_message, "@[SETTLEMENT] {s10} withdrew {reg1} troops from the garrison."),
 	    (else_try),
 	        (display_message, "@[SETTLEMENT] rejected garrison withdrawal from {s10} (no room, or nothing to withdraw)"),
+	    (try_end),
+	    (call_script, "script_coop_send_center_manage_data", ":player_no", ":center_id"),
+	  ]),
+
+	# Moves up to req_count of a regular-troop stack from the owner's own
+	# party into the garrison -- the reverse of coop_apply_withdraw_garrison.
+	# Re-resolves the requested stack fresh from the LIVE party (never
+	# trusts the client's count beyond clamping to it as an upper bound).
+	# Heroes can't be garrisoned this way, matching
+	# coop_client_get_nth_party_stack's own filter.
+	("coop_apply_deposit_garrison",
+	  [
+	    (store_script_param, ":player_no", 1),
+	    (store_script_param, ":center_id", 2),
+	    (store_script_param, ":troop_id", 3),
+	    (store_script_param, ":req_count", 4),
+	    (player_get_troop_id, ":troop_no", ":player_no"),
+	    (str_store_player_username, s10, ":player_no"),
+	    (assign, ":ok", 0),
+	    (try_begin),
+	        (is_between, ":center_id", centers_begin, centers_end),
+	        (party_get_slot, ":lock_player", ":center_id", slot_center_coop_lock_player),
+	        (eq, ":lock_player", ":player_no"),
+	        (party_slot_eq, ":center_id", slot_town_lord, ":troop_no"),
+	        (gt, ":troop_id", 0),
+	        (neg|troop_is_hero, ":troop_id"),
+	        (gt, ":req_count", 0),
+
+	        (player_get_party_id, ":owner_party", ":player_no"),
+	        (assign, ":sel_count", 0),
+	        (party_get_num_companion_stacks, ":num_stacks", ":owner_party"),
+	        (try_for_range, ":i_stack", 0, ":num_stacks"),
+	            (party_stack_get_troop_id, ":st_troop", ":owner_party", ":i_stack"),
+	            (eq, ":st_troop", ":troop_id"),
+	            (party_stack_get_size, ":sel_count", ":owner_party", ":i_stack"),
+	        (try_end),
+	        (val_min, ":sel_count", ":req_count"),
+	        (gt, ":sel_count", 0),
+	        (assign, ":ok", 1),
+	    (try_end),
+	    (try_begin),
+	        (eq, ":ok", 1),
+	        (party_remove_members, ":owner_party", ":troop_id", ":sel_count"),
+	        (party_add_members, ":center_id", ":troop_id", ":sel_count"),
+	        (str_store_troop_name, s11, ":troop_id"),
+	        (str_store_party_name, s12, ":center_id"),
+	        (assign, reg1, ":sel_count"),
+	        (display_message, "@[SETTLEMENT] {s10} deposited {reg1} {s11} into the garrison of {s12}."),
+	    (else_try),
+	        (display_message, "@[SETTLEMENT] rejected garrison deposit from {s10}"),
 	    (try_end),
 	    (call_script, "script_coop_send_center_manage_data", ":player_no", ":center_id"),
 	  ]),
@@ -13770,7 +13943,14 @@ coop_scripts = [
             (eq, ":event_type", multiplayer_event_multiplayer_campaign_withdraw_garrison_request),
             (store_script_param, ":center_id", 3),
             (store_script_param, ":stack_index", 4),
-            (call_script, "script_coop_apply_withdraw_garrison", ":player_no", ":center_id", ":stack_index"),
+            (store_script_param, ":count", 5),
+            (call_script, "script_coop_apply_withdraw_garrison", ":player_no", ":center_id", ":stack_index", ":count"),
+        (else_try),
+            (eq, ":event_type", multiplayer_event_multiplayer_campaign_deposit_garrison_request),
+            (store_script_param, ":center_id", 3),
+            (store_script_param, ":troop_id", 4),
+            (store_script_param, ":count", 5),
+            (call_script, "script_coop_apply_deposit_garrison", ":player_no", ":center_id", ":troop_id", ":count"),
         (else_try),
             (eq, ":event_type", multiplayer_event_multiplayer_campaign_appoint_governor_request),
             (store_script_param, ":center_id", 3),
