@@ -2046,6 +2046,26 @@ slot_coop_inv_snap_bag_mod_begin    = 276   # 276-371: bag modifiers (slots 10-1
 slot_coop_trade_snap_item_begin = 0    # 0-95: merchant item IDs
 slot_coop_trade_snap_mod_begin  = 96   # 96-191: merchant item modifiers
 
+# 2026-09-10: the PLAYER's own pre-trade equip+bag snapshot, deliberately
+# NOT sharing trp_temp_troop's slot_coop_inv_snap_* slots the regular
+# inventory screen uses. Root cause of a real bug: the trade/market screen
+# reuses the same native window_inventory widget as the regular inventory
+# screen (module_scripts.py's window-open hook explicitly documents this
+# same sharing for the loot screen), and that hook fires unconditionally
+# on ANY window_inventory open -- requesting a fresh regular-inventory
+# sync from the server, whose response lands in trp_temp_troop's snap
+# slots. Reusing those same slots for the trade-open snapshot meant that
+# response could silently overwrite it mid-trade with different data,
+# corrupting the close-diff's baseline. Starts well past the merchant
+# range and the native banner-mesh-cache slots (module_coop_scripts.py
+# uses raw low slot numbers, e.g. slot 100, for that) to avoid any
+# further collision. 106 slots each (10 equip + 96 bag), matching
+# coop_inv_client_diff_and_send's own equip/bag split.
+slot_coop_trade_snap_player_equip_item_begin = 300   # 300-309
+slot_coop_trade_snap_player_equip_mod_begin  = 310   # 310-319
+slot_coop_trade_snap_player_bag_item_begin   = 320   # 320-415
+slot_coop_trade_snap_player_bag_mod_begin    = 416   # 416-511
+
 ########################################################
 ##  LOCAL SP ENCOUNTER (client-side) ###################
 ########################################################
@@ -2217,6 +2237,24 @@ slot_player_coop_real_items_begin                 = 628
 slot_player_coop_real_items_end                   = 637
 slot_player_coop_real_mods_begin                  = 637
 slot_player_coop_real_mods_end                    = 646
+
+# 2026-09-10: short-lived allowance of items this player just bought in a
+# trade, same shape/purpose as the loot allowance above. The regular
+# inventory-close guard (coop_inv_sync_back_validate_and_save) only ever
+# trusted loot as a legitimate source of new items; a trade purchase
+# equipped in the market screen could get flagged as "minted" and the
+# whole batch reverted if that close ever gets handled by the regular
+# inv_change path instead of (or racing) the dedicated trade-close diff --
+# a real, reproduced bug that turned out to depend on exact same-tick
+# timing between the market window's close and an unrelated regular-
+# inventory-sync request the shared native window also triggers on open.
+# Rather than keep chasing that timing, this makes the outcome correct
+# regardless of which path actually processes the close: populated at
+# trade-close time (coop_ev_cli_trade_change, one slot per item that left
+# the merchant's shelf = was bought) and checked by the guard exactly like
+# loot is.
+slot_player_coop_trade_bought_items_begin         = 647
+slot_player_coop_trade_bought_items_end           = 659
 
 # Coop player slot -- which troop the player has selected for the battle
 # Slots 40-48 are used by invasion mode (ccoop); 49 is free

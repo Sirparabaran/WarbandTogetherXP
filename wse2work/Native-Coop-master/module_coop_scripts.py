@@ -8304,6 +8304,40 @@ coop_scripts = [
         (multiplayer_get_my_player, ":my_player"),
         (player_get_troop_id, ":my_troop", ":my_player"),
         (store_troop_gold, "$g_coop_trade_gold_before", ":my_troop"),
+        # 2026-09-10, fixed the same day: ALSO snapshot the player's own
+        # troop slots (equip 0-9 + bag 10-105), into DEDICATED slots on
+        # trp_temp_array_b -- NOT trp_temp_troop's inventory-screen snap
+        # slots. Those looked safely reusable (trade and inventory are
+        # mutually exclusive UI states) but weren't: the trade/market
+        # screen reuses the same native window_inventory widget as the
+        # regular inventory screen, and module_scripts.py's window-open
+        # hook fires unconditionally on that widget opening, requesting
+        # (and then receiving) a fresh regular-inventory sync whose
+        # response overwrites those exact slots -- silently corrupting
+        # this snapshot mid-trade with the wrong data. See this event's
+        # own dedicated slot constants (module_constants.py) for the
+        # collision-avoidance reasoning. Lets the trade-close diff
+        # (coop_trade_client_diff_and_send) detect exactly which of the
+        # PLAYER's own slots changed -- including a purchase equipped
+        # directly in the trade screen -- instead of only ever knowing the
+        # merchant's own shelf changed.
+        (try_for_range, ":ts_slot", 0, 10),
+            (troop_get_inventory_slot, ":ts_item", ":my_troop", ":ts_slot"),
+            (troop_get_inventory_slot_modifier, ":ts_imod", ":my_troop", ":ts_slot"),
+            (store_add, ":ts_snap_item", slot_coop_trade_snap_player_equip_item_begin, ":ts_slot"),
+            (troop_set_slot, "trp_temp_array_b", ":ts_snap_item", ":ts_item"),
+            (store_add, ":ts_snap_mod", slot_coop_trade_snap_player_equip_mod_begin, ":ts_slot"),
+            (troop_set_slot, "trp_temp_array_b", ":ts_snap_mod", ":ts_imod"),
+        (try_end),
+        (try_for_range, ":ts_slot", 10, 106),
+            (troop_get_inventory_slot, ":ts_item", ":my_troop", ":ts_slot"),
+            (troop_get_inventory_slot_modifier, ":ts_imod", ":my_troop", ":ts_slot"),
+            (store_sub, ":ts_offset", ":ts_slot", 10),
+            (store_add, ":ts_snap_item", slot_coop_trade_snap_player_bag_item_begin, ":ts_offset"),
+            (troop_set_slot, "trp_temp_array_b", ":ts_snap_item", ":ts_item"),
+            (store_add, ":ts_snap_mod", slot_coop_trade_snap_player_bag_mod_begin, ":ts_offset"),
+            (troop_set_slot, "trp_temp_array_b", ":ts_snap_mod", ":ts_imod"),
+        (try_end),
         # Set trade screen open -- poller diffs on close
         (assign, "$g_coop_trade_screen_open", 1),
         # Set encountered party so native price callbacks work
@@ -9596,12 +9630,27 @@ coop_scripts = [
 
    # script_coop_char_siege_center_set
    # Input: player_no, center party id (0 = clear)
+   #
+   # 2026-09-10: switched off coop_char_store_dict_name (which requires
+   # slot_player_coop_char_state != 0, i.e. THIS mod's own "hydration
+   # ready" bookkeeping) to coop_char_store_dict_name_raw directly (needs
+   # only acctid/username, which are always resolvable regardless of
+   # hydration state). Root-caused a long-standing bug: this call used to
+   # be a bare, unwrapped call_script immediately followed by an unwrapped
+   # (eq, reg0, 1) -- when the gated helper returned 0 (this connection not
+   # yet marked ready), that failed condition propagated up and silently
+   # aborted EVERY statement after it in the caller, including all of
+   # coop_ev_cli_local_fight_result's win/loot/consequence handling, with
+   # no error printed anywhere. This is a small auxiliary side-dict, not
+   # the main character save coop_save_character protects -- it never
+   # needed the strict ready-state gate in the first place.
    ("coop_char_siege_center_set",
    [
        (store_script_param, ":player_no", 1),
        (store_script_param, ":center_no", 2),
-       (call_script, "script_coop_char_store_dict_name", ":player_no"),
-       (eq, reg0, 1),
+       (player_get_slot, ":scs_acctid", ":player_no", slot_player_coop_steam_acctid),
+       (str_store_player_username, s10, ":player_no"),
+       (call_script, "script_coop_char_store_dict_name_raw", ":scs_acctid"),
        (dict_create, "$coop_char_siege_dict"),
        (dict_load_file, "$coop_char_siege_dict", s11),
        (dict_set_int, "$coop_char_siege_dict", "@char_siege_center", ":center_no"),
@@ -9611,11 +9660,13 @@ coop_scripts = [
 
    # script_coop_char_siege_center_get
    # Input: player_no. Output: reg0 = center party id (0 = none)
+   # See coop_char_siege_center_set's comment -- same 2026-09-10 fix.
    ("coop_char_siege_center_get",
    [
        (store_script_param, ":player_no", 1),
-       (call_script, "script_coop_char_store_dict_name", ":player_no"),
-       (eq, reg0, 1),
+       (player_get_slot, ":scg_acctid", ":player_no", slot_player_coop_steam_acctid),
+       (str_store_player_username, s10, ":player_no"),
+       (call_script, "script_coop_char_store_dict_name_raw", ":scg_acctid"),
        (assign, ":center_no", 0),
        (dict_create, "$coop_char_siege_dict"),
        (dict_load_file, "$coop_char_siege_dict", s11),
@@ -9632,12 +9683,18 @@ coop_scripts = [
    # entry while the party still has its battle association -- the
    # post-mission rejoin REBUILDS the party, so the result arm cannot
    # resolve the opponent from it (project-state lesson).
+   # See coop_char_siege_center_set's comment -- same 2026-09-10 fix. This
+   # one is doubly important: it's also the STASH call (module_scripts.py's
+   # game_event_party_encounter), so the same silent-abort bug could have
+   # been preventing the opponent from ever being stashed in the first
+   # place, not just from being read back later.
    ("coop_char_local_enemy_set",
    [
        (store_script_param, ":player_no", 1),
        (store_script_param, ":enemy_no", 2),
-       (call_script, "script_coop_char_store_dict_name", ":player_no"),
-       (eq, reg0, 1),
+       (player_get_slot, ":les_acctid", ":player_no", slot_player_coop_steam_acctid),
+       (str_store_player_username, s10, ":player_no"),
+       (call_script, "script_coop_char_store_dict_name_raw", ":les_acctid"),
        (dict_create, "$coop_char_lenemy_dict"),
        (dict_load_file, "$coop_char_lenemy_dict", s11),
        (dict_set_int, "$coop_char_lenemy_dict", "@char_local_enemy", ":enemy_no"),
@@ -9647,11 +9704,13 @@ coop_scripts = [
 
    # script_coop_char_local_enemy_get
    # Input: player_no. Output: reg0 = enemy party id (0 = none)
+   # See coop_char_siege_center_set's comment -- same 2026-09-10 fix.
    ("coop_char_local_enemy_get",
    [
        (store_script_param, ":player_no", 1),
-       (call_script, "script_coop_char_store_dict_name", ":player_no"),
-       (eq, reg0, 1),
+       (player_get_slot, ":leg_acctid", ":player_no", slot_player_coop_steam_acctid),
+       (str_store_player_username, s10, ":player_no"),
+       (call_script, "script_coop_char_store_dict_name_raw", ":leg_acctid"),
        (assign, ":enemy_no", 0),
        (dict_create, "$coop_char_lenemy_dict"),
        (dict_load_file, "$coop_char_lenemy_dict", s11),
@@ -10747,6 +10806,40 @@ coop_scripts = [
 			(call_script, "script_coop_save_character", ":player_no"),
 		(try_end),
 
+		# Phase 3 (2026-09-10): apply a local-fight result deferred by
+		# coop_ev_cli_local_fight_result because this connection wasn't
+		# hydrated yet when the client's win/loss report arrived (a real
+		# race -- the client can send it within ~0.1s of reconnecting,
+		# faster than this hydrate can complete). char_state is ready as
+		# of this point, so it's now safe to actually apply it.
+		#
+		# Keyed by username ONLY (not coop_char_store_dict_name's acctid-
+		# aware naming): a first attempt used that helper on both sides and
+		# it silently never matched -- the deferred WRITE happens BEFORE
+		# hydrate, when slot_player_coop_steam_acctid is still whatever it
+		# was before THIS hydrate call sets it (a few lines above), while
+		# this READ runs AFTER that set -- for a Steam-identified player
+		# the two sides could resolve to different files (username-keyed
+		# vs acctid-keyed) depending on exactly when acctid becomes known.
+		# Username is stable and available on both sides regardless of
+		# hydration/acctid timing, so this small stash uses it exclusively.
+		(str_store_player_username, s60, ":player_no"),
+		(str_store_string, s61, "@coop_lfr_pending_{s60}"),
+		(dict_create, "$coop_char_lfr_apply_dict"),
+		(dict_load_file, "$coop_char_lfr_apply_dict", s61),
+		(try_begin),
+			(dict_has_key, "$coop_char_lfr_apply_dict", "@char_pending_local_fight"),
+			(dict_get_int, ":lfr_pending", "$coop_char_lfr_apply_dict", "@char_pending_local_fight"),
+			(eq, ":lfr_pending", 1),
+			(dict_get_int, ":lfr_win_loss", "$coop_char_lfr_apply_dict", "@char_pending_local_win_loss"),
+			(dict_get_int, ":lfr_xp", "$coop_char_lfr_apply_dict", "@char_pending_local_xp"),
+			(dict_set_int, "$coop_char_lfr_apply_dict", "@char_pending_local_fight", 0),
+			(dict_save, "$coop_char_lfr_apply_dict", s61),
+			(display_message, "@[LOCAL WIN] applying deferred result on hydrate"),
+			(call_script, "script_coop_apply_local_fight_result", ":player_no", ":lfr_win_loss", ":lfr_xp"),
+		(try_end),
+		(dict_free, "$coop_char_lfr_apply_dict"),
+
        # Char sync must precede the inventory pushes: the engine bounds
        # troop_set_inventory_slot by getNumInventorySlots()+10 (skill-derived,
        # 30+6*IM+10), so bag slots above the IM-0 cap are silently dropped
@@ -11188,6 +11281,15 @@ coop_scripts = [
 	# trade_change per slot then trade_done with the gold delta.
 	("coop_trade_client_diff_and_send", [
 
+          # 2026-09-10: one-line proof-of-execution. Three fix attempts at
+          # this bug (snapshot isolation, guard allowance) have not
+          # resolved it -- this checks the one thing not yet confirmed:
+          # whether this script runs AT ALL when the market closes. If
+          # this line never appears, the market close isn't reaching this
+          # code path (something upstream of here is the real gap); if it
+          # does appear, the bug is downstream of this point and the next
+          # step is different.
+          (display_message, "@[TRADE CLOSE] diff running"),
           (multiplayer_get_my_player, ":my_player"),
           (player_get_troop_id, ":my_troop", ":my_player"),
 
@@ -11212,6 +11314,62 @@ coop_scripts = [
                   multiplayer_event_multiplayer_campaign_client_events,
                   multiplayer_event_multiplayer_campaign_trade_change,
                   ":slot", ":cur_item", ":cur_mod"),
+          (try_end),
+
+          # 2026-09-10: ALSO diff the player's OWN troop (equip 0-9 + bag
+          # 10-cap) against the snapshot trade_sync_done took, same
+          # capacity clamp as coop_inv_client_diff_and_send (slots beyond
+          # the IM-derived cap read as engine garbage, not real inventory).
+          # This is what actually catches a purchase the player equipped
+          # directly in the trade screen -- see coop_ev_cli_trade_change's
+          # comment for why the old merchant-inverse-only approach missed
+          # it (bag-only placement, no awareness of an equip destination).
+          (store_skill_level, ":ts_im_level", "skl_inventory_management", ":my_troop"),
+          (store_mul, ":ts_bag_cap", ":ts_im_level", 6),
+          (val_add, ":ts_bag_cap", 40),
+          (val_min, ":ts_bag_cap", 106),
+          (try_for_range, ":ts_slot", 0, 10),
+              (troop_get_inventory_slot, ":ts_cur_item", ":my_troop", ":ts_slot"),
+              (troop_get_inventory_slot_modifier, ":ts_cur_mod", ":my_troop", ":ts_slot"),
+              (store_add, ":ts_snap_item_slot", slot_coop_trade_snap_player_equip_item_begin, ":ts_slot"),
+              (troop_get_slot, ":ts_snap_item", "trp_temp_array_b", ":ts_snap_item_slot"),
+              (store_add, ":ts_snap_mod_slot", slot_coop_trade_snap_player_equip_mod_begin, ":ts_slot"),
+              (troop_get_slot, ":ts_snap_mod", "trp_temp_array_b", ":ts_snap_mod_slot"),
+              (assign, ":ts_changed", 0),
+              (try_begin),
+                  (neq, ":ts_cur_item", ":ts_snap_item"),
+                  (assign, ":ts_changed", 1),
+              (else_try),
+                  (neq, ":ts_cur_mod", ":ts_snap_mod"),
+                  (assign, ":ts_changed", 1),
+              (try_end),
+              (eq, ":ts_changed", 1),
+              (multiplayer_send_4_int_to_server,
+                  multiplayer_event_multiplayer_campaign_client_events,
+                  multiplayer_event_multiplayer_campaign_trade_player_slot_change,
+                  ":ts_slot", ":ts_cur_item", ":ts_cur_mod"),
+          (try_end),
+          (try_for_range, ":ts_slot", 10, ":ts_bag_cap"),
+              (troop_get_inventory_slot, ":ts_cur_item", ":my_troop", ":ts_slot"),
+              (troop_get_inventory_slot_modifier, ":ts_cur_mod", ":my_troop", ":ts_slot"),
+              (store_sub, ":ts_offset", ":ts_slot", 10),
+              (store_add, ":ts_snap_item_slot", slot_coop_trade_snap_player_bag_item_begin, ":ts_offset"),
+              (troop_get_slot, ":ts_snap_item", "trp_temp_array_b", ":ts_snap_item_slot"),
+              (store_add, ":ts_snap_mod_slot", slot_coop_trade_snap_player_bag_mod_begin, ":ts_offset"),
+              (troop_get_slot, ":ts_snap_mod", "trp_temp_array_b", ":ts_snap_mod_slot"),
+              (assign, ":ts_changed", 0),
+              (try_begin),
+                  (neq, ":ts_cur_item", ":ts_snap_item"),
+                  (assign, ":ts_changed", 1),
+              (else_try),
+                  (neq, ":ts_cur_mod", ":ts_snap_mod"),
+                  (assign, ":ts_changed", 1),
+              (try_end),
+              (eq, ":ts_changed", 1),
+              (multiplayer_send_4_int_to_server,
+                  multiplayer_event_multiplayer_campaign_client_events,
+                  multiplayer_event_multiplayer_campaign_trade_player_slot_change,
+                  ":ts_slot", ":ts_cur_item", ":ts_cur_mod"),
           (try_end),
 
           # Compute gold delta and send trade_done
@@ -11788,12 +11946,26 @@ coop_scripts = [
         	]),
 
 	# ch49 ev 21: one merchant slot changed in a closing trade. Applies the
-	# merchant-side write AND the player-side inverse: an item leaving the
-	# merchant was bought (add to the player troop), an item arriving was
-	# sold (remove from the player troop). This keeps the server troop and
-	# char dict authoritative for trade acquisitions -- the INV GUARD's
-	# baseline contract ("trade is applied server-side before any client
-	# inventory diff") depends on it.
+	# merchant-side write only -- keeps the shop's remaining stock
+	# authoritative. Player-side placement is now handled entirely by
+	# trade_player_slot_change (ev 206) instead of the blind troop_add_item/
+	# troop_remove_item this used to do.
+	#
+	# 2026-09-10: that blind approach is the root cause of a real bug --
+	# troop_add_item always drops a bought item into the first free BAG
+	# slot, with no awareness of where the player actually put it. If the
+	# player equipped the purchase directly in the trade screen, the
+	# client showed it equipped, but this call still bagged a copy
+	# server-side; the subsequent authoritative push (coop_push_player_
+	# inventory in coop_ev_cli_trade_done) then overwrote the client with
+	# that wrong, unequipped state -- "server did unequip and move it to
+	# inventory slot." trade_player_slot_change fixes this by having the
+	# client report its OWN final troop slots (a full diff against a
+	# pre-trade snapshot, same mechanism the regular inventory screen
+	# already uses correctly), so bought/sold items land exactly where the
+	# player put them, equipped or bagged. Keeping BOTH this add/remove and
+	# the new diff would double the item (one copy from each mechanism),
+	# so this arm no longer touches the player's troop at all.
 	("coop_ev_cli_trade_change", [
 		(store_script_param, ":player_no", 1),
 		(store_script_param, ":slot", 2),
@@ -11810,21 +11982,69 @@ coop_scripts = [
                 (is_between, ":item_id", 1, coop_new_items_end),
                 (this_or_next|eq, ":imod", -1),
                 (is_between, ":imod", 0, 43),
+                # 2026-09-10: read the OUTGOING item before overwriting, to
+                # record a purchase in the trade-bought allowance -- see
+                # that slot range's own comment (module_constants.py) for
+                # why the regular inventory-close guard needs to know about
+                # this regardless of which close path ends up running.
                 (troop_get_inventory_slot, ":old_item", ":merchant_troop", ":slot"),
-                (troop_get_inventory_slot_modifier, ":old_imod", ":merchant_troop", ":slot"),
                 (troop_set_inventory_slot, ":merchant_troop", ":slot", ":item_id"),
                 (troop_set_inventory_slot_modifier, ":merchant_troop", ":slot", ":imod"),
-                (this_or_next|neq, ":old_item", ":item_id"),
-                (neq, ":old_imod", ":imod"),
-                (player_get_troop_id, ":troop_no", ":player_no"),
                 (try_begin),
                     (ge, ":old_item", 0),
-                    (troop_add_item, ":troop_no", ":old_item", ":old_imod"),
+                    (neq, ":old_item", ":item_id"),
+                    (assign, ":tb_free_slot", -1),
+                    (try_for_range, ":tb_i", slot_player_coop_trade_bought_items_begin, slot_player_coop_trade_bought_items_end),
+                        (eq, ":tb_free_slot", -1),
+                        (player_get_slot, ":tb_val", ":player_no", ":tb_i"),
+                        (le, ":tb_val", 0),
+                        (assign, ":tb_free_slot", ":tb_i"),
+                    (try_end),
+                    (try_begin),
+                        (eq, ":tb_free_slot", -1),
+                        # Allowance full (12 distinct purchases already
+                        # pending this session) -- overwrite the oldest
+                        # (first) slot rather than silently drop the
+                        # newest purchase's legitimacy.
+                        (assign, ":tb_free_slot", slot_player_coop_trade_bought_items_begin),
+                    (try_end),
+                    (player_set_slot, ":player_no", ":tb_free_slot", ":old_item"),
                 (try_end),
-                (try_begin),
-                    (ge, ":item_id", 0),
-                    (troop_remove_item, ":troop_no", ":item_id"),
-                (try_end),
+            (try_end),
+        	]),
+
+	# ch49 ev 206: one of the player's OWN troop slots changed during a
+	# trade (equip 0-9 or bag 10-105) -- see this event's own comment in
+	# header_common.py and coop_ev_cli_trade_change's comment above for the
+	# full story. Applied directly, bypassing the normal inv_change INV
+	# GUARD: a trade's legitimacy already comes from its gold delta
+	# (trade_done) and the merchant's own stock (trade_change), so a new
+	# item appearing here is never an unearned mint the way a bare
+	# inv_change would be.
+	("coop_ev_cli_trade_player_slot_change", [
+		(store_script_param, ":player_no", 1),
+		(store_script_param, ":slot", 2),
+		(store_script_param, ":item_id", 3),
+		(store_script_param, ":imod", 4),
+            # 2026-09-10, fixed the same day: these validation checks were
+            # bare top-level statements, not wrapped in a try_begin -- the
+            # exact same silent-abort pattern already root-caused once this
+            # session (coop_char_siege_center_get). Any narrow validation
+            # miss here (this event is brand new and unproven) would have
+            # silently dropped the write with no error, matching the live
+            # report exactly: item shown client-side but never actually
+            # applied server-side ("ghosting"), snapping back on the next
+            # refresh that re-reads the untouched real troop data.
+            (try_begin),
+                (is_between, ":slot", 0, 106),
+                (this_or_next|eq, ":item_id", -1),
+                (is_between, ":item_id", 1, coop_new_items_end),
+                (this_or_next|eq, ":imod", -1),
+                (is_between, ":imod", 0, 43),
+                (player_get_troop_id, ":troop_no", ":player_no"),
+                (ge, ":troop_no", 0),
+                (troop_set_inventory_slot, ":troop_no", ":slot", ":item_id"),
+                (troop_set_inventory_slot_modifier, ":troop_no", ":slot", ":imod"),
             (try_end),
         	]),
 
@@ -13263,115 +13483,46 @@ coop_scripts = [
                 (assign, reg2, ":total_casualties"),
                 (assign, reg3, ":xp_gained"),
                 (display_message, "@{s0}: Local fight result: win={reg1} casualties={reg2} xp_gained={reg3}"),
-                # Clear busy flag
-                (player_set_slot, ":player_no", slot_player_coop_in_local_encounter, 0),
-                # Apply XP SP-style to hero + all troop stacks.
+                # 2026-09-10: the ORIGINAL root cause (coop_char_siege_center_get
+                # silently aborting this whole function -- see its own comment)
+                # is fixed. Live testing after that fix revealed a SECOND, real
+                # issue: [CHAR SAVE] BLOCKED for this exact player at this exact
+                # point, proving slot_player_coop_char_state==0 here -- this
+                # connection genuinely hasn't been marked hydrated by OUR
+                # bookkeeping yet. The client can send this result within
+                # ~0.1s of reconnecting (module_simple_triggers.py's poll),
+                # faster than our own hydrate poll/identify handshake
+                # completes -- a real race, not a logic bug. Applying XP or
+                # consequences against a not-yet-loaded troop, or trying to
+                # save a not-yet-ready character, is exactly what that BLOCKED
+                # gate exists to prevent. So: apply immediately only when
+                # already hydrated; otherwise stash it and let
+                # coop_player_hydrate's own post-load phase apply it, once
+                # the troop this all needs to act on actually exists.
+                (player_get_slot, ":lfr_char_state", ":player_no", slot_player_coop_char_state),
                 (try_begin),
-                    (gt, ":xp_gained", 0),
-                    (call_script, "script_coop_apply_xp_shares", ":player_no", ":xp_gained", 0),
-                (try_end),
-                # Handle encounter aftermath
-                (player_get_party_id, ":player_party", ":player_no"),
-                # Local siege? request_siege_local stashed the assaulted
-                # center in the char dict -- player_no and the slot-indexed
-                # party are reassigned on the post-mission rejoin, so only
-                # the username-keyed dict identifies the siege reliably.
-                # (The center lock needs no handling here: the disconnect
-                # into the local mission already released it via player_exit.)
-                (call_script, "script_coop_char_siege_center_get", ":player_no"),
-                (assign, ":siege_center", reg0),
-                (try_begin),
-                    (gt, ":siege_center", 0),
-                    (call_script, "script_coop_char_siege_center_set", ":player_no", 0),
-                    (assign, reg4, ":siege_center"),
-                    (assign, reg5, ":win_loss"),
-                    (display_message, "@[LOCAL SIEGE] center={reg4} win={reg5}"),
-                    (try_begin),
-                        (eq, ":win_loss", 1),
-                        # A8: full native-parity consequences. The A7
-                        # applier reads live garrison stacks and the
-                        # center's pre-transfer faction, so it runs
-                        # BEFORE the capture script clears/transfers.
-                        (call_script, "script_coop_victory_consequences_local", ":player_no", ":siege_center"),
-                        (call_script, "script_coop_siege_capture_consequences", ":player_no", ":siege_center"),
-                        # castle_taken renown +5 (single participant,
-                        # applied directly -- no stash needed).
-                        (player_get_troop_id, ":a8_ptrp", ":player_no"),
-                        (try_begin),
-                            (ge, ":a8_ptrp", 0),
-                            (call_script, "script_change_troop_renown", ":a8_ptrp", 5),
-                        (try_end),
-                        (str_store_player_username, s0, ":player_no"),
-                        (str_store_party_name, s1, ":siege_center"),
-                        (display_message, "@{s0} has captured {s1}!"),
-                    (try_end),
+                    (eq, ":lfr_char_state", coop_char_state_ready),
+                    (call_script, "script_coop_apply_local_fight_result", ":player_no", ":win_loss", ":xp_gained"),
                 (else_try),
-                    (eq, ":win_loss", 1),
-                    # Victory: destroy enemy party. The engine won't remove
-                    # an emptied party on its own; never remove centers (a
-                    # local siege's opponent is the center, owned by the
-                    # @char_siege_center capture block above). Opponent comes
-                    # from the ev-16 char-dict stash -- the rebuilt party has
-                    # no battle association to query.
-                    (call_script, "script_coop_char_local_enemy_get", ":player_no"),
-                    (assign, ":enemy_party", reg0),
-                    (call_script, "script_coop_char_local_enemy_set", ":player_no", 0),
-                    # Temporary diagnostic (2026-09-10): pins down exactly
-                    # why neither [A7] message below ever printed for a
-                    # confirmed win=1 local fight result.
-                    (assign, ":dbg_active", 0),
-                    (assign, ":dbg_type", -1),
-                    (try_begin),
-                        (gt, ":enemy_party", 0),
-                        (party_is_active, ":enemy_party"),
-                        (assign, ":dbg_active", 1),
-                        (party_get_slot, ":dbg_type", ":enemy_party", slot_party_type),
-                    (try_end),
-                    (assign, reg1, ":enemy_party"),
-                    (assign, reg2, ":dbg_active"),
-                    (assign, reg3, ":dbg_type"),
-                    (assign, reg4, spt_castle),
-                    (assign, reg5, spt_town),
-                    (assign, reg6, spt_village),
-                    (display_message, "@[A7 DEBUG] enemy_party={reg1} active={reg2} type={reg3} (castle={reg4} town={reg5} village={reg6})"),
-                    (try_begin),
-                        (le, ":enemy_party", 0),
-                        (display_message, "@[A7] local win: no stashed opponent -- consequences skipped"),
-                    (try_end),
-                    (try_begin),
-                        (gt, ":enemy_party", 0),
-                        (party_is_active, ":enemy_party"),
-                        (party_get_slot, ":enemy_type", ":enemy_party", slot_party_type),
-                        (neq, ":enemy_type", spt_castle),
-                        (neq, ":enemy_type", spt_town),
-                        (neq, ":enemy_type", spt_village),
-                        (call_script, "script_coop_victory_consequences_local", ":player_no", ":enemy_party"),
-                        (party_leave_cur_battle, ":enemy_party"),
-                        (party_clear, ":enemy_party"),
-                        (remove_party, ":enemy_party"),
-                    (try_end),
+                    (display_message, "@[LOCAL WIN] not hydrated yet -- deferring to next hydrate"),
+                    # Username-keyed only (not coop_char_store_dict_name_raw's
+                    # acctid-aware naming) -- see coop_player_hydrate's Phase
+                    # 3 comment for why: slot_player_coop_steam_acctid is
+                    # still pre-hydrate here (hydrate is what sets it, a few
+                    # lines into coop_player_hydrate), so an acctid-based key
+                    # computed now could diverge from what Phase 3 resolves
+                    # once acctid is actually known. Username is stable on
+                    # both sides regardless of that timing.
+                    (str_store_player_username, s60, ":player_no"),
+                    (str_store_string, s61, "@coop_lfr_pending_{s60}"),
+                    (dict_create, "$coop_char_lfr_dict"),
+                    (dict_load_file, "$coop_char_lfr_dict", s61),
+                    (dict_set_int, "$coop_char_lfr_dict", "@char_pending_local_fight", 1),
+                    (dict_set_int, "$coop_char_lfr_dict", "@char_pending_local_win_loss", ":win_loss"),
+                    (dict_set_int, "$coop_char_lfr_dict", "@char_pending_local_xp", ":xp_gained"),
+                    (dict_save, "$coop_char_lfr_dict", s61),
+                    (dict_free, "$coop_char_lfr_dict"),
                 (try_end),
-                # Disengage from battle
-                (try_begin),
-                    (gt, ":player_party", 0),
-                    (party_is_active, ":player_party"),
-                    (party_leave_cur_battle, ":player_party"),
-                (try_end),
-                # Save character
-                (call_script, "script_coop_save_character", ":player_no"),
-                # Re-push char sync: the join-time push predates this event,
-                # so the client's player/companion XP is stale until now.
-                (call_script, "script_coop_send_char_sync_to_client", ":player_no"),
-                # The victory script can have added an item. Send it only
-                # after the character sync, since inventory capacity depends
-                # on the synced inventory-management skill.
-                (call_script, "script_coop_push_player_inventory", ":player_no"),
-                # Same staleness for stack upgrade credits: the party_add_xp
-                # above just minted them, after the hydrate-time ev-22 push.
-                (call_script, "script_coop_send_party_upgradeable_to_client", ":player_no"),
-                # Notify client encounter is resolved
-                (multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
-                    multiplayer_event_multiplayer_campaign_server_event_encounter_resolved, 0),
             (else_try),
                 # Per-stack casualty data: troop_id, killed_count
                 (assign, ":troop_id", ":p4"),
@@ -13385,6 +13536,119 @@ coop_scripts = [
                 (try_end),
             (try_end),
         	]),
+
+	# Extracted 2026-09-10 from coop_ev_cli_local_fight_result so the same
+	# consequence logic can run either immediately (already-hydrated
+	# connection) or deferred from coop_player_hydrate (see that function's
+	# own pending-local-fight check) once hydration completes.
+	("coop_apply_local_fight_result", [
+		(store_script_param, ":player_no", 1),
+		(store_script_param, ":win_loss", 2),
+		(store_script_param, ":xp_gained", 3),
+		(str_store_player_username, s0, ":player_no"),
+		# Clear busy flag
+		(player_set_slot, ":player_no", slot_player_coop_in_local_encounter, 0),
+		# Apply XP SP-style to hero + all troop stacks.
+		(try_begin),
+			(gt, ":xp_gained", 0),
+			(call_script, "script_coop_apply_xp_shares", ":player_no", ":xp_gained", 0),
+		(try_end),
+		# Handle encounter aftermath
+		(player_get_party_id, ":player_party", ":player_no"),
+		# Local siege? request_siege_local stashed the assaulted
+		# center in the char dict -- player_no and the slot-indexed
+		# party are reassigned on the post-mission rejoin, so only
+		# the username-keyed dict identifies the siege reliably.
+		# (The center lock needs no handling here: the disconnect
+		# into the local mission already released it via player_exit.)
+		(assign, ":siege_center", 0),
+		(try_begin),
+			(call_script, "script_coop_char_siege_center_get", ":player_no"),
+			(assign, ":siege_center", reg0),
+		(try_end),
+		(assign, ":is_siege", 0),
+		(try_begin),
+			(gt, ":siege_center", 0),
+			(assign, ":is_siege", 1),
+		(try_end),
+		(try_begin),
+			(eq, ":is_siege", 1),
+			(call_script, "script_coop_char_siege_center_set", ":player_no", 0),
+			(assign, reg4, ":siege_center"),
+			(assign, reg5, ":win_loss"),
+			(display_message, "@[LOCAL SIEGE] center={reg4} win={reg5}"),
+			(try_begin),
+				(eq, ":win_loss", 1),
+				# A8: full native-parity consequences. The A7
+				# applier reads live garrison stacks and the
+				# center's pre-transfer faction, so it runs
+				# BEFORE the capture script clears/transfers.
+				(call_script, "script_coop_victory_consequences_local", ":player_no", ":siege_center"),
+				(call_script, "script_coop_siege_capture_consequences", ":player_no", ":siege_center"),
+				# castle_taken renown +5 (single participant,
+				# applied directly -- no stash needed).
+				(player_get_troop_id, ":a8_ptrp", ":player_no"),
+				(try_begin),
+					(ge, ":a8_ptrp", 0),
+					(call_script, "script_change_troop_renown", ":a8_ptrp", 5),
+				(try_end),
+				(str_store_player_username, s0, ":player_no"),
+				(str_store_party_name, s1, ":siege_center"),
+				(display_message, "@{s0} has captured {s1}!"),
+			(try_end),
+		(try_end),
+		(try_begin),
+			(eq, ":is_siege", 0),
+			(eq, ":win_loss", 1),
+			(display_message, "@[LOCAL WIN] processing consequences"),
+			# Victory: destroy enemy party. The engine won't remove
+			# an emptied party on its own; never remove centers (a
+			# local siege's opponent is the center, owned by the
+			# @char_siege_center capture block above). Opponent comes
+			# from the ev-16 char-dict stash -- the rebuilt party has
+			# no battle association to query.
+			(call_script, "script_coop_char_local_enemy_get", ":player_no"),
+			(assign, ":enemy_party", reg0),
+			(call_script, "script_coop_char_local_enemy_set", ":player_no", 0),
+			(try_begin),
+				(le, ":enemy_party", 0),
+				(display_message, "@[LOCAL WIN] no stashed opponent -- consequences skipped"),
+			(try_end),
+			(try_begin),
+				(gt, ":enemy_party", 0),
+				(party_is_active, ":enemy_party"),
+				(party_get_slot, ":enemy_type", ":enemy_party", slot_party_type),
+				(neq, ":enemy_type", spt_castle),
+				(neq, ":enemy_type", spt_town),
+				(neq, ":enemy_type", spt_village),
+				(call_script, "script_coop_victory_consequences_local", ":player_no", ":enemy_party"),
+				(party_leave_cur_battle, ":enemy_party"),
+				(party_clear, ":enemy_party"),
+				(remove_party, ":enemy_party"),
+			(try_end),
+		(try_end),
+		# Disengage from battle
+		(try_begin),
+			(gt, ":player_party", 0),
+			(party_is_active, ":player_party"),
+			(party_leave_cur_battle, ":player_party"),
+		(try_end),
+		# Save character
+		(call_script, "script_coop_save_character", ":player_no"),
+		# Re-push char sync: the join-time push predates this event,
+		# so the client's player/companion XP is stale until now.
+		(call_script, "script_coop_send_char_sync_to_client", ":player_no"),
+		# The victory script can have added an item. Send it only
+		# after the character sync, since inventory capacity depends
+		# on the synced inventory-management skill.
+		(call_script, "script_coop_push_player_inventory", ":player_no"),
+		# Same staleness for stack upgrade credits: the party_add_xp
+		# above just minted them, after the hydrate-time ev-22 push.
+		(call_script, "script_coop_send_party_upgradeable_to_client", ":player_no"),
+		# Notify client encounter is resolved
+		(multiplayer_send_2_int_to_player, ":player_no", multiplayer_event_multiplayer_campaign_server_events,
+			multiplayer_event_multiplayer_campaign_server_event_encounter_resolved, 0),
+	]),
 
   # ==================================================================
   # CAMPAIGN: NETWORK DISPATCHERS (channels 125/49)
@@ -14423,6 +14687,12 @@ coop_scripts = [
             (eq, ":event_type", multiplayer_event_multiplayer_campaign_trade_done),
             (store_script_param, ":gold_delta", 3),
             (call_script, "script_coop_ev_cli_trade_done", ":player_no", ":gold_delta"),
+        (else_try),
+            (eq, ":event_type", multiplayer_event_multiplayer_campaign_trade_player_slot_change),
+            (store_script_param, ":tps_slot", 3),
+            (store_script_param, ":tps_item", 4),
+            (store_script_param, ":tps_imod", 5),
+            (call_script, "script_coop_ev_cli_trade_player_slot_change", ":player_no", ":tps_slot", ":tps_item", ":tps_imod"),
         (else_try),
             (eq, ":event_type", multiplayer_event_multiplayer_campaign_quest_status),
             (store_script_param, ":quest_no", 3),
@@ -16049,10 +16319,19 @@ coop_scripts = [
         (try_begin),
             (gt, ":merchant_troop", 0),
             (store_troop_gold, ":merchant_gold", ":merchant_troop"),
+            # 2026-09-10: boosted per user request ("merchants have few
+            # dinars"), then fixed the same day -- the first version
+            # multiplied the troop's CURRENT gold by 10 and topped up to
+            # match every time this script ran (every trade-screen open),
+            # compounding without limit on repeated clicks. This is a
+            # one-time FLOOR instead: top up only if still below it, and do
+            # nothing once a merchant is already there, so opening the
+            # trade screen repeatedly can never keep adding money.
             (try_begin),
-                (le, ":merchant_gold", 0),
-                (troop_add_gold, ":merchant_troop", 10000),
-                (assign, ":merchant_gold", 10000),
+                (lt, ":merchant_gold", 100000),
+                (store_sub, ":merchant_gold_topup", 100000, ":merchant_gold"),
+                (troop_add_gold, ":merchant_troop", ":merchant_gold_topup"),
+                (assign, ":merchant_gold", 100000),
             (try_end),
             # Campaign servers can reach the first trade request before the
             # weekly Native merchant triggers have populated inventories.
@@ -16195,6 +16474,18 @@ coop_scripts = [
                (try_end),
            (try_end),
 
+           # 2026-09-10: a recent trade purchase is the SECOND legitimate
+           # source of new items -- see slot_player_coop_trade_bought_items_
+           # begin's own comment (module_constants.py). Same shape as the
+           # loot allowance above, unconditional (no "active" flag gate --
+           # coop_ev_cli_trade_change only ever populates this on a real
+           # purchase, so an empty/zeroed slot here just never matches).
+           (try_for_range, ":tb_slot", slot_player_coop_trade_bought_items_begin, slot_player_coop_trade_bought_items_end),
+               (player_get_slot, ":tb_item", ":player_no", ":tb_slot"),
+               (eq, ":tb_item", ":item"),
+               (val_add, ":base_ct", 1),
+           (try_end),
+
            (gt, ":post_ct", ":base_ct"),
            (assign, ":ok", 0),
            (display_message, "@[INV GUARD] {s10}: rejected inventory batch (item minted/duplicated)"),
@@ -16203,6 +16494,12 @@ coop_scripts = [
        (try_begin),
            (eq, ":ok", 1),
            (display_message, "@[INV GUARD] {s10}: accepted inventory batch"),
+           # Consume the trade-bought allowance now that it's done its job
+           # -- a stale entry left set would keep legitimizing a duplicate
+           # of that same item id indefinitely.
+           (try_for_range, ":tb_clear_slot", slot_player_coop_trade_bought_items_begin, slot_player_coop_trade_bought_items_end),
+               (player_set_slot, ":player_no", ":tb_clear_slot", 0),
+           (try_end),
            (call_script, "script_coop_save_character", ":player_no"),
            # The accept path does not call coop_push_player_inventory (only
            # the revert path does) -- so anything hooked onto that push

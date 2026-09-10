@@ -307,6 +307,19 @@ multiplayer_event_multiplayer_campaign_reinforce_garrison_request = 204
 # center_id, troop_id, count (1/5/10 from the client's qty submenu) --
 # server always clamps count to the live stack size, never trusts it.
 multiplayer_event_multiplayer_campaign_deposit_garrison_request   = 205
+# 2026-09-10: one of the player's OWN troop slots (equip 0-9 or bag
+# 10-105) changed during a trade session -- payload slot/item/imod,
+# same shape as trade_change but for the player's troop instead of the
+# merchant's. Needed because a purchase the player equips directly in
+# the trade screen was previously only ever applied via trade_change's
+# blind troop_add_item (bag-only, no slot awareness) -- see
+# coop_ev_cli_trade_change's own comment for the full story. Applied
+# server-side with a direct troop_set_inventory_slot, bypassing the
+# normal inv_change INV GUARD entirely: a trade's legitimacy is already
+# established by its gold delta (trade_done) and the merchant's own
+# stock (trade_change), so this never represents an unearned "minted"
+# item the way a bare inv_change would.
+multiplayer_event_multiplayer_campaign_trade_player_slot_change   = 206
 multiplayer_event_multiplayer_campaign_server_event_hall_npc    = 53
 multiplayer_event_multiplayer_campaign_server_event_tavern_offer = 54
 multiplayer_event_multiplayer_campaign_server_event_tavern_result = 55
